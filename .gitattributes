@@ -1,0 +1,4 @@
+# Run `git archive --format=zip --output=basmagi-quiz.zip HEAD` to export.
+.github/ export-ignore
+
+# Large Files, excluded to make the `basmagi-quiz.zip` smaller. They exist in the actual project.

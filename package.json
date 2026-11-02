@@ -1,0 +1,16 @@
+{
+  "name": "online-matlab-compiler",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "map": "node scripts/map.js",
+    "commit": "node scripts/commit.js",
+    "release": "node scripts/release.js",
+    "zip": "node scripts/commit.js && git archive --format=zip --output=basmagi-quiz.zip HEAD && echo basmagi-quiz.zip is ready",
+    "push": "git switch production && git merge main && git push && git switch main",
+    "push:all": "npm run zip && git push && npm run push"
+  },
+  "dependencies": {
+    "ignore": "^7.0.5"
+  }
+}
