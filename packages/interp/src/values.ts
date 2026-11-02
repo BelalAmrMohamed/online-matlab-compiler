@@ -150,7 +150,7 @@ export function index(t: T, ix: Idx[]): T {
   else { const sub = new Array(k).fill(0); for (let o = 0; o < n; o++) { let p = 0; for (let d = 0; d < k; d++) p += lists[d][sub[d]] * strides[d]; r[o] = t.data[p]; for (let d = 0; d < k; d++) { if (++sub[d] < rd[d]) break; sub[d] = 0; } } }
   return mk(t.cls, rd, r);
 }
-export function assign(t: T | undefined, ix: Idx[], rhs: T): T {
+export function assign(t: T | undefined, ix: Idx[], rhs: T, inPlace = false): T {
   const cls = t ? t.cls : rhs.cls;
   let cur: T = t ?? { cls, dims: [0, 0], data: new Float64Array(0) };
   const k = ix.length, nr = rhs.data.length;
@@ -163,7 +163,7 @@ export function assign(t: T | undefined, ix: Idx[], rhs: T): T {
     if (mx > n) {
       if (!(dims.length === 2 && (dims[0] <= 1 || dims[1] === 1) )) throw new MatlabError('Attempt to grow array along ambiguous dimension.');
       const nd = new Float64Array(mx); nd.set(data); data = nd; dims = dims[1] === 1 && dims[0] > 1 ? [mx, 1] : [1, mx];
-    } else data = data.slice();
+    } else if (!inPlace || rhs.data === data) data = data.slice();
     for (let i = 0; i < l.length; i++) data[l[i]] = sat(cls, rhs.data[nr === 1 ? 0 : i]);
     return { cls, dims, data };
   }
@@ -171,7 +171,7 @@ export function assign(t: T | undefined, ix: Idx[], rhs: T): T {
   const rdims = rhs.dims.filter(d => d !== 1);
   let rpos = 0;
   const lists = ix.map((a, d) => {
-    if (a === 'colon') { const len = ed[d] === 0 ? (nr === 1 ? 1 : (rdims[rpos] ?? 1)) : ed[d]; if (a === 'colon') rpos++; return Array.from({ length: len }, (_, i) => i); }
+    if (a === 'colon') { const len = ed[d] === 0 || cur.data.length === 0 ? (nr === 1 ? 1 : (rdims[rpos] ?? 1)) : ed[d]; if (a === 'colon') rpos++; return Array.from({ length: len }, (_, i) => i); }
     const l = idxList(a, ed[d], d + 1, k)!; if (l.length !== 1) rpos++; return l;
   });
   const cnt = lists.reduce((m, l) => m * l.length, 1);
@@ -183,7 +183,7 @@ export function assign(t: T | undefined, ix: Idx[], rhs: T): T {
     data = new Float64Array(numel(nd)); const sub = new Array(k).fill(0), n0 = cur.data.length;
     for (let o = 0; o < n0; o++) { let p = 0, m = 1; for (let d = 0; d < k; d++) { p += sub[d] * m; m *= nd[d]; } data[p] = cur.data[o]; for (let d = 0; d < k; d++) { if (++sub[d] < ed[d]) break; sub[d] = 0; } }
     ed = nd;
-  } else data = cur.data.slice();
+  } else data = inPlace && rhs.data !== cur.data ? cur.data : cur.data.slice();
   const strides = [1]; for (let d = 1; d < k; d++) strides.push(strides[d - 1] * ed[d - 1]);
   const rd = lists.map(l => l.length), sub = new Array(k).fill(0);
   for (let o = 0; o < cnt; o++) {
@@ -191,7 +191,8 @@ export function assign(t: T | undefined, ix: Idx[], rhs: T): T {
     data[p] = sat(cls, rhs.data[nr === 1 ? 0 : o]);
     for (let d = 0; d < k; d++) { if (++sub[d] < rd[d]) break; sub[d] = 0; }
   }
-  return mk(cls, ed, data);
+  let dd = ed; while (dd.length > 2 && dd[dd.length - 1] === 1) dd = dd.slice(0, -1);
+  return { cls, dims: dd, data };
 }
 
 // ---------- concatenation ----------

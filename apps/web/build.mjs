@@ -1,26 +1,36 @@
-// Bundles worker + app + samples into ONE static dist/index.html (deployable anywhere, incl. Vercel static).
+// Bundles worker + app + assets + lessons into ONE static dist/index.html, plus SEO files (robots, sitemap, manifest) and public/ icons.
 import { build } from 'esbuild';
-import { readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
-import { PNG } from 'pngjs';
+import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync } from 'node:fs';
 import path from 'node:path';
-const here = import.meta.dirname, A = path.join(here, '../../packages/interp/test/assets');
+import { loadLessons } from './lessons.mjs';
+const here = import.meta.dirname, dist = path.join(here, 'dist');
+
+// Public URL: SITE_URL env, else Vercel's production URL, else the placeholder below (edit it or set SITE_URL in Vercel).
+const vercel = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+const SITE = (process.env.SITE_URL || (vercel ? 'https://' + vercel : 'https://mlweb.vercel.app')).replace(/\/$/, '');
 
 const w = await build({ entryPoints: [path.join(here, 'src/worker.ts')], bundle: true, write: false, format: 'iife', target: 'es2022', minify: true });
-const workerSrc = w.outputFiles[0].text;
-
-const samples = {};
-for (const [name, gray] of [['test.png', false], ['testgray.png', true]]) {
-  const fp = path.join(A, name), png = PNG.sync.read(readFileSync(fp)), ch = gray ? 1 : 3;
-  const d = Buffer.alloc(png.width * png.height * ch);
-  for (let i = 0; i < png.width * png.height; i++) for (let k = 0; k < ch; k++) d[i * ch + k] = png.data[i * 4 + (gray ? 0 : k)];
-  samples[name] = { width: png.width, height: png.height, channels: ch, b64: d.toString('base64'), bitDepth: 8 * ch, format: 'png', fileSize: statSync(fp).size,
-    colorType: gray ? 'grayscale' : 'truecolor', filename: '/vfs/' + name, fileModDate: '02-Nov-2026 10:00:00' };
-}
+const assets = JSON.parse(readFileSync(path.join(here, 'assets/assets.json'), 'utf8'));
+const lessons = loadLessons(path.join(here, 'lessons'));
 const m = await build({ entryPoints: [path.join(here, 'src/main.ts')], bundle: true, write: false, format: 'iife', target: 'es2022', minify: true,
-  define: { __WORKER_SRC__: JSON.stringify(workerSrc), __SAMPLES__: JSON.stringify(samples) } });
+  define: { __WORKER_SRC__: JSON.stringify(w.outputFiles[0].text), __ASSETS__: JSON.stringify(assets), __LESSONS__: JSON.stringify(lessons) } });
 const js = m.outputFiles[0].text.replace(/<\/script/gi, '<\\/script');
 const css = readFileSync(path.join(here, 'src/style.css'), 'utf8');
-const html = readFileSync(path.join(here, 'src/index.html'), 'utf8').replace('/*CSS*/', () => css).replace('/*JS*/', () => js);
-mkdirSync(path.join(here, 'dist'), { recursive: true });
-writeFileSync(path.join(here, 'dist/index.html'), html);
-console.log('dist/index.html', (html.length / 1024).toFixed(0) + ' KB');
+const jsonld = JSON.stringify({ '@context': 'https://schema.org', '@graph': [
+  { '@type': 'WebApplication', name: 'MLWeb', url: SITE + '/', applicationCategory: 'EducationalApplication', operatingSystem: 'Any (web browser)', inLanguage: 'en',
+    description: 'Free online MATLAB-style notebook for learning image processing in the browser, with 9 ready lessons and exercises.', offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+    image: SITE + '/og-image.jpg', author: { '@type': 'Person', name: 'Belal Amr Mohamed', url: 'https://belal-amr.vercel.app' } },
+  { '@type': 'Person', name: 'Belal Amr Mohamed', url: 'https://belal-amr.vercel.app' }] }).replace(/</g, '\\u003c');
+const lessonList = lessons.map(l => `<li><a href="${SITE}/#${l.id}">${l.title}</a></li>`).join('');
+const html = readFileSync(path.join(here, 'src/index.html'), 'utf8')
+  .replace('/*CSS*/', () => css).replace('/*JS*/', () => js)
+  .replaceAll('%%SITE%%', SITE).replace('%%JSONLD%%', () => jsonld).replace('%%LESSONLIST%%', () => lessonList);
+mkdirSync(dist, { recursive: true });
+if (existsSync(path.join(here, 'public'))) cpSync(path.join(here, 'public'), dist, { recursive: true });
+writeFileSync(path.join(dist, 'index.html'), html);
+writeFileSync(path.join(dist, 'robots.txt'), `User-agent: *\nAllow: /\n\nSitemap: ${SITE}/sitemap.xml\n`);
+const day = new Date().toISOString().slice(0, 10);
+writeFileSync(path.join(dist, 'sitemap.xml'), `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>${SITE}/</loc><lastmod>${day}</lastmod><priority>1.0</priority></url>\n</urlset>\n`);
+writeFileSync(path.join(dist, 'site.webmanifest'), JSON.stringify({ name: 'MLWeb – Online MATLAB Image Processing Notebook', short_name: 'MLWeb', start_url: '/', display: 'standalone',
+  background_color: '#12151c', theme_color: '#c2410c', icons: [{ src: '/icon-192.png', sizes: '192x192', type: 'image/png' }, { src: '/icon-512.png', sizes: '512x512', type: 'image/png' }] }, null, 1));
+console.log('dist/index.html', (html.length / 1024).toFixed(0) + ' KB', '| site', SITE, '| lessons', lessons.length);

@@ -8,7 +8,7 @@ const extOf = (n: string) => (n.split('.').pop() || 'png').toLowerCase();
 const host: Host = {
   print: s => post({ t: 'print', s }),
   warn: s => post({ t: 'warn', s }),
-  readImage: p => files.get(p) ?? null,
+  readImage: p => files.get(p) ?? [...files].find(([k]) => k.toLowerCase() === p.toLowerCase())?.[1] ?? null,
   writeImage(p, img) {
     const base = p.split(/[\\/]/).pop()!;
     const raw: RawImage = { ...img, bitDepth: 8 * img.channels, format: extOf(base) === 'jpg' ? 'jpg' : extOf(base), fileSize: img.data.length,

@@ -11,7 +11,7 @@ button.primary{background:var(--accent);color:var(--accent-ink);border-color:var
 .actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 #status{font-size:12px;color:var(--mute);min-width:70px}
 #layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px;padding:16px;max-width:1500px;margin:0 auto}
-@media(max-width:900px){#layout{grid-template-columns:1fr;padding:12px 16px}}
+@media(max-width:900px){#layout{grid-template-columns:minmax(0,1fr);padding:12px 16px}}
 .cell{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin-bottom:12px;overflow:hidden}
 .cell.sel{border-color:var(--accent)}
 .cell .tools{display:flex;gap:4px;align-items:center;padding:4px 8px;border-bottom:1px solid var(--line);font-size:12px;color:var(--mute)}
@@ -39,3 +39,12 @@ table.ws{width:100%;border-collapse:collapse;font:12px ui-monospace,Menlo,monosp
 .file button{padding:0 6px;font-size:12px}
 .hist div{font:12px ui-monospace,Menlo,monospace;padding:2px 4px;border-radius:4px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.hist div:hover{background:var(--out)}
 .addbar{display:flex;gap:8px;justify-content:center;margin:-4px 0 12px}
+#credit{text-align:center;padding:14px 16px 22px;font-size:12px;color:var(--mute)}#credit a{color:var(--accent);text-decoration:none;font-weight:600}#credit a:hover{text-decoration:underline}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:1;opacity:.055;background:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='420' height='260'><text x='20' y='150' transform='rotate(-24 210 130)' font-family='Arial,sans-serif' font-size='17' font-weight='700' fill='%23888'>Belal Amr Mohamed · belal-amr.vercel.app</text></svg>")}
+.md table{border-collapse:collapse;margin:.5em 0;font-size:.95em}.md th,.md td{border:1px solid var(--line);padding:3px 10px;text-align:left}.md th{background:var(--out)}
+.md a{color:var(--accent)}
+select#lessons{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--accent);border-radius:6px;padding:4px 8px;max-width:260px}
+.lessonnav{display:flex;gap:8px;justify-content:space-between;align-items:center;margin:0 0 12px;font-size:13px;color:var(--mute)}
+
+.lessonnav{flex-wrap:wrap}.lessonnav span{flex:1 1 100%;order:-1;min-width:0}.lessonnav button{flex:1}@media(min-width:700px){.lessonnav span{flex:1;order:0;text-align:center}.lessonnav button{flex:none}}
+select#lessons{max-width:min(260px,60vw)}

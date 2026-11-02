@@ -103,7 +103,7 @@ export class Interp {
       for (let d = 0; d < ix.length; d++) { const v = (ix[d] as T).data[0]; if (!(v >= 1 && v <= cur.dims[d] && v === Math.floor(v))) { ok = false; break; } off += (v - 1) * m; m *= cur.dims[d]; }
       if (ok) { cur.data[off] = sat(cur.cls, rhs.data[0]); return; }
     }
-    const res = assign(cur, ix, rhs); (res as any).held = true; sc.set(lv.n, res);
+    const res = assign(cur, ix, rhs, cur !== undefined); (res as any).held = true; sc.set(lv.n, res);
   }
 
   // ---------- expressions ----------
@@ -462,3 +462,5 @@ def('im2uint8', a => { const t = T_(a[0], 'im2uint8'); return [{ cls: 'uint8', d
 def('imcomplement', a => { const t = T_(a[0], 'imcomplement'); return [{ cls: t.cls, dims: t.dims.slice(), data: t.data.map(v => (t.cls === 'uint8' ? 255 - v : t.cls === 'logical' ? 1 - v : 1 - v)) }]; });
 def('mat2gray', a => { const t = T_(a[0], 'mat2gray'); let lo = Infinity, hi = -Infinity; for (const v of t.data) { if (v < lo) lo = v; if (v > hi) hi = v; } const d = hi - lo; return [{ cls: 'double', dims: t.dims.slice(), data: t.data.map(v => (d === 0 ? (v > 0 ? 1 : 0) : (v - lo) / d)) }]; });
 def('im2gray', (a, n, I) => { const t = T_(a[0], 'im2gray'); return t.dims.length === 3 ? BUILTINS.rgb2gray(a, n, I) : [t]; });
+
+def('im2bw', (a, n, I) => { let t = T_(a[0], 'im2bw'); if (t.dims.length === 3) t = BUILTINS.rgb2gray([t], 1, I)[0] as T; const lv = a[1] ? T_(a[1], 'im2bw').data[0] : 0.5, th = t.cls === 'uint8' ? lv * 255 : lv; const o = mk('logical', t.dims.slice()); for (let i = 0; i < t.data.length; i++) o.data[i] = t.data[i] > th ? 1 : 0; return [o]; });

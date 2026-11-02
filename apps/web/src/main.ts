@@ -1,5 +1,7 @@
 declare const __WORKER_SRC__: string;
-declare const __SAMPLES__: Record<string, { width: number; height: number; channels: 1 | 3; b64: string; bitDepth: number; format: string; fileSize: number; colorType: string; filename: string; fileModDate: string }>;
+declare const __ASSETS__: Record<string, { width: number; height: number; channels: 1 | 3; b64: string; bitDepth: number; format: string; fileSize: number; colorType: string; filename: string; fileModDate: string; colormap?: number[][] }>;
+interface Lesson { id: string; title: string; group: string; files: string[]; cells: { type: 'code' | 'md'; src: string }[] }
+declare const __LESSONS__: Lesson[];
 
 type Out = { k: 'text' | 'err' | 'warn'; s: string } | { k: 'img'; fig: number; w: number; h: number; rgb: Uint8Array; tool: boolean };
 interface Cell { id: number; type: 'code' | 'md'; src: string; outs: Out[]; count: number | null; running: boolean; mdEdit: boolean }
@@ -75,7 +77,7 @@ function runCell(c: Cell): Promise<void> {
   if (curRun) return Promise.resolve();
   return new Promise(resolve => {
     c.outs = []; c.running = true; c.count = ++execCount;
-    for (const ln of c.src.split(/\r?\n/)) { const t = ln.trim(); if (t && !t.startsWith('%')) cmdHist.push(t); }
+    for (const ln of c.src.split(/\r?\n/)) { const t = ln.trim(); if (t && !t.startsWith('%') && t !== 'end') cmdHist.push(t); }
     cmdHist = cmdHist.slice(-300); store.set('mlweb.hist', JSON.stringify(cmdHist));
     const timer = window.setTimeout(() => {
       appendOut('err', 'Execution stopped: time limit (60 s) exceeded. The workspace was reset.\n'); startWorker(); vars = []; finishRun(); renderSide();
@@ -90,6 +92,28 @@ function stopRun() {
 }
 async function runAll() { for (const c of cells) { if (c.type === 'code') await runCell(c); if (c.outs.some(o => o.k === 'err')) break; } }
 function resetWorkspace() { if (curRun) return; worker.postMessage({ t: 'reset' }); vars = []; renderSide(); }
+
+// ---------------- lessons ----------------
+let curLesson: string | null = null;
+function loadAsset(name: string) {
+  if (files.has(name)) return; const s = __ASSETS__[name]; if (!s) return;
+  const bin = atob(s.b64), d = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) d[i] = bin.charCodeAt(i);
+  const { b64, ...rest } = s; void b64; files.set(name, { ...rest, data: d });
+}
+function openLesson(id: string, ask = true) {
+  const L = __LESSONS__.find(l => l.id === id); if (!L || curRun) return;
+  if (ask && !confirm(`Open "${L.title}"?\nThe current notebook will be replaced (use .ipynb / .m export first if you want to keep it).`)) return;
+  L.files.forEach(loadAsset); cells = L.cells.map(c => mkCell(c.type, c.src)); sel = 0; curLesson = id;
+  store.set('mlweb.lesson', id); save(); startWorker(); vars = []; render(); renderSide(); window.scrollTo(0, 0);
+  history_.replaceState(null, '', '#' + id); const s = document.getElementById('lessons') as HTMLSelectElement | null; if (s) s.value = id;
+  document.title = L.title + ' – MLWeb | Belal Amr Mohamed';
+}
+const history_ = window.history;
+function lessonNav(): HTMLElement | null {
+  const i = __LESSONS__.findIndex(l => l.id === curLesson); if (i < 0) return null;
+  const go = (d: number) => $('button', { disabled: !__LESSONS__[i + d], onclick: () => openLesson(__LESSONS__[i + d].id) }, d < 0 ? '← Previous lesson' : 'Next lesson →');
+  return $('div', { class: 'lessonnav' }, go(-1), $('span', {}, `Lesson ${i + 1} of ${__LESSONS__.length}: ${__LESSONS__[i].title}`), go(1));
+}
 
 // ---------------- persistence ----------------
 const save = () => store.set('mlweb.nb', JSON.stringify(cells.map(c => ({ type: c.type, src: c.src }))));
@@ -111,29 +135,33 @@ function defaultNotebook(): Cell[] {
 // ---------------- markdown (tiny) ----------------
 const esc = (s: string) => s.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]!));
 function md(src: string): string {
-  const inline = (t: string) => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/\*([^*]+)\*/g, '<i>$1</i>');
-  const out: string[] = []; let list: 'ul' | 'ol' | null = null, para: string[] = [], code: string[] | null = null;
+  const inline = (t: string) => esc(t).replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>').replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/\*([^*]+)\*/g, '<i>$1</i>');
+  const out: string[] = []; let list: 'ul' | 'ol' | null = null, para: string[] = [], code: string[] | null = null, tbl: string[][] | null = null;
+  const flushT = () => { if (tbl) { out.push('<table>' + tbl.map((r, i) => '<tr>' + r.map(c => (i === 0 ? '<th>' : '<td>') + inline(c) + (i === 0 ? '</th>' : '</td>')).join('') + '</tr>').join('') + '</table>'); tbl = null; } };
   const flushP = () => { if (para.length) { out.push('<p>' + inline(para.join(' ')) + '</p>'); para = []; } };
   const flushL = () => { if (list) { out.push(`</${list}>`); list = null; } };
   for (const ln of src.split(/\r?\n/)) {
     if (code) { if (/^```/.test(ln)) { out.push('<pre>' + esc(code.join('\n')) + '</pre>'); code = null; } else code.push(ln); continue; }
     if (/^```/.test(ln)) { flushP(); flushL(); code = []; continue; }
     let m;
+    if (/^\s*\|.*\|\s*$/.test(ln)) { flushP(); flushL(); if (!tbl) tbl = []; if (!/^\s*\|[\s:|-]+\|\s*$/.test(ln)) tbl.push(ln.trim().replace(/^\||\|$/g, '').split('|').map(x => x.trim())); continue; }
+    if (tbl) flushT();
     if ((m = /^(#{1,3})\s+(.*)/.exec(ln))) { flushP(); flushL(); out.push(`<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`); }
     else if ((m = /^\s*[-*]\s+(.*)/.exec(ln))) { flushP(); if (list !== 'ul') { flushL(); out.push('<ul>'); list = 'ul'; } out.push('<li>' + inline(m[1]) + '</li>'); }
     else if ((m = /^\s*\d+\.\s+(.*)/.exec(ln))) { flushP(); if (list !== 'ol') { flushL(); out.push('<ol>'); list = 'ol'; } out.push('<li>' + inline(m[1]) + '</li>'); }
     else if (!ln.trim()) { flushP(); flushL(); } else { flushL(); para.push(ln.trim()); }
   }
-  if (code) out.push('<pre>' + esc(code.join('\n')) + '</pre>'); flushP(); flushL();
+  if (code) out.push('<pre>' + esc(code.join('\n')) + '</pre>'); flushP(); flushL(); flushT();
   return out.join('\n');
 }
 
 // ---------------- image helpers ----------------
-function rawToCanvas(img: { width: number; height: number; channels: number; data: Uint8Array }): HTMLCanvasElement {
+function rawToCanvas(img: { width: number; height: number; channels: number; data: Uint8Array; colormap?: number[][] }): HTMLCanvasElement {
   const cv = document.createElement('canvas'); cv.width = img.width; cv.height = img.height;
   const id = new ImageData(img.width, img.height), n = img.width * img.height;
   for (let i = 0; i < n; i++) {
-    if (img.channels === 1) { const v = img.data[i]; id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = v; }
+    if (img.channels === 1 && img.colormap) { const c = img.colormap[Math.min(img.colormap.length - 1, img.data[i])]; id.data[i * 4] = c[0] * 255; id.data[i * 4 + 1] = c[1] * 255; id.data[i * 4 + 2] = c[2] * 255; }
+    else if (img.channels === 1) { const v = img.data[i]; id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = v; }
     else { id.data[i * 4] = img.data[i * 3]; id.data[i * 4 + 1] = img.data[i * 3 + 1]; id.data[i * 4 + 2] = img.data[i * 3 + 2]; }
     id.data[i * 4 + 3] = 255;
   }
@@ -213,6 +241,7 @@ function render() {
   const root = nb(), y = window.scrollY, active = document.activeElement as HTMLTextAreaElement | null;
   let keep: { id: string; s: number; e: number } | null = active && active.dataset?.cell ? { id: active.dataset.cell, s: active.selectionStart, e: active.selectionEnd } : null;
   root.replaceChildren();
+  const ln = lessonNav(); if (ln) root.append(ln);
   cells.forEach((c, i) => root.append(cellEl(c, i)));
   root.append($('div', { class: 'addbar' }, $('button', { onclick: () => { cells.push(mkCell('code', '')); sel = cells.length - 1; save(); focusCell(cells[sel].id); } }, '+ Code'),
     $('button', { onclick: () => { const c = mkCell('md', '## Heading'); c.mdEdit = true; cells.push(c); sel = cells.length - 1; save(); focusCell(c.id); } }, '+ Text')));
@@ -264,7 +293,7 @@ function exportIpynb() {
 }
 function exportM() {
   const s = cells.map(c => c.type === 'md' ? c.src.split('\n').map(l => '% ' + l).join('\n') : c.src).join('\n\n%%\n');
-  download('notebook.m', new Blob([s.replace(/\n/g, '\r\n')], { type: 'text/plain' }));
+  download('notebook.m', new Blob([('% Exported from MLWeb - Belal Amr Mohamed (belal-amr.vercel.app)\n\n' + s).replace(/\n/g, '\r\n')], { type: 'text/plain' }));
 }
 async function importFile(f: File) {
   const text = await f.text();
@@ -280,16 +309,25 @@ async function importFile(f: File) {
 
 // ---------------- boot ----------------
 function boot() {
-  for (const [name, s] of Object.entries(__SAMPLES__)) { const bin = atob(s.b64), d = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) d[i] = bin.charCodeAt(i); const { b64, ...rest } = s; void b64; files.set(name, { ...rest, data: d }); }
+  ['test.png', 'testgray.png'].forEach(loadAsset);
   try { cmdHist = JSON.parse(store.get('mlweb.hist') ?? '[]'); } catch { cmdHist = []; }
-  cells = load() ?? defaultNotebook();
+  const hashId = decodeURIComponent(location.hash.slice(1)), saved = load();
+  curLesson = store.get('mlweb.lesson') || null;
+  if (curLesson) __LESSONS__.find(l => l.id === curLesson)?.files.forEach(loadAsset);
+  cells = saved ?? defaultNotebook();
   const act = document.getElementById('actions')!;
   const imp = $('input', { type: 'file', accept: '.m,.ipynb', style: 'display:none' }); imp.onchange = () => { if (imp.files?.[0]) importFile(imp.files[0]); imp.value = ''; };
-  act.append($('button', { class: 'primary', id: 'runall', onclick: () => runAll() }, '▶▶ Run all'), $('button', { id: 'stop', disabled: true, onclick: stopRun }, '■ Stop'),
+  const sl = $('select', { id: 'lessons', title: 'Ready-made lessons' }, $('option', { value: '' }, 'Lessons…'));
+  for (const g of ['Sections', 'Lectures']) { const og = $('optgroup', { label: g }); for (const l of __LESSONS__.filter(x => x.group === g)) og.append($('option', { value: l.id }, l.title)); sl.append(og); }
+  sl.value = curLesson ?? ''; sl.onchange = () => { if (sl.value) openLesson(sl.value); else sl.value = curLesson ?? ''; };
+  act.append(sl, $('button', { class: 'primary', id: 'runall', onclick: () => runAll() }, '▶▶ Run all'), $('button', { id: 'stop', disabled: true, onclick: stopRun }, '■ Stop'),
     $('span', { id: 'status' }, 'Idle'), $('button', { onclick: () => { cells.push(mkCell('code', '')); sel = cells.length - 1; save(); focusCell(cells[sel].id); } }, '+ Cell'),
     $('button', { onclick: () => imp.click() }, 'Import'), imp, $('button', { onclick: exportIpynb }, '.ipynb'), $('button', { onclick: exportM }, '.m'),
-    $('button', { title: 'Replace notebook with the starter notebook', onclick: () => { if (confirm('Replace the current notebook with the starter notebook?')) { cells = defaultNotebook(); sel = 0; save(); render(); } } }, 'New'));
+    $('button', { title: 'Replace notebook with the starter notebook', onclick: () => { if (confirm('Replace the current notebook with the starter notebook?')) { cells = defaultNotebook(); sel = 0; curLesson = null; store.set('mlweb.lesson', ''); history_.replaceState(null, '', location.pathname); save(); render(); } } }, 'New'));
   startWorker(); render(); renderSide();
+  if (hashId && __LESSONS__.some(l => l.id === hashId) && hashId !== curLesson) openLesson(hashId, false);
+  else if (curLesson) document.title = (__LESSONS__.find(l => l.id === curLesson)?.title ?? 'MLWeb') + ' – MLWeb | Belal Amr Mohamed';
+  window.addEventListener('hashchange', () => { const h = decodeURIComponent(location.hash.slice(1)); if (h && h !== curLesson && __LESSONS__.some(l => l.id === h)) openLesson(h); });
 }
 boot();
 (window as any).__mlweb = { get cells() { return cells; }, runAll, runCell, files };
