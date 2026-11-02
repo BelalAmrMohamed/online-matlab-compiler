@@ -14,6 +14,6 @@ export function parseLesson(text) {
   return lesson;
 }
 export function loadLessons(dir) {
-  const order = ['section-1', 'section-2', 'section-3', 'section-4', 'lecture-1', 'lecture-2', 'lecture-3', 'lecture-4', 'lecture-5'];
+  const order = ['section-1', 'section-2', 'section-3', 'section-4', 'lecture-1', 'lecture-2', 'lecture-3', 'lecture-4', 'lecture-5', 'lecture-6'];
   return readdirSync(dir).filter(f => f.endsWith('.txt')).map(f => parseLesson(readFileSync(path.join(dir, f), 'utf8'))).sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
 }

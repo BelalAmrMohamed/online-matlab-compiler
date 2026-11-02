@@ -1,7 +1,7 @@
 // MATLAB-subset lexer + parser. Pure TypeScript, no DOM/Node dependencies.
 export class MatlabError extends Error {}
 export type Tok = { t: string; v: any; sp: boolean; line: number };
-const KW = new Set(['for', 'while', 'if', 'elseif', 'else', 'end', 'function', 'return', 'break', 'continue']);
+const KW = new Set(['for', 'while', 'if', 'elseif', 'else', 'end', 'function', 'return', 'break', 'continue', 'switch', 'case', 'otherwise']);
 // Commands MATLAB allows in "command syntax" (e.g. `imfinfo 'x.png'`, `hold on`).
 const CMDS = new Set(['imfinfo', 'clear', 'close', 'help', 'doc', 'lookfor', 'format', 'hold', 'who', 'whos', 'clc', 'figure', 'clearvars', 'imtool', 'imshow']);
 
@@ -89,6 +89,28 @@ export function parse(src: string): any[] {
     if (t.t === 'kw') {
       p++;
       switch (t.v) {
+        case 'switch': {
+          const value = expr();
+          const cases: any[] = [];
+          let otherwise: any[] | null = null;
+          skipSeps();
+          while (isKw('case') || isKw('otherwise')) {
+            if (isKw('case')) {
+              p++;
+              const match = expr();
+              skipSeps();
+              cases.push({ match, body: block(['case', 'otherwise', 'end']) });
+            } else {
+              p++;
+              skipSeps();
+              otherwise = block(['end']);
+              break;
+            }
+          }
+          if (!isKw('end')) err("missing 'end'");
+          p++;
+          return { k: 'switch', value, cases, otherwise };
+        }
         case 'for': {
           const paren = isOp('('); if (paren) p++;
           const v = nxt().v; expectOp('='); const e = expr(); if (paren && isOp(')')) p++;
@@ -136,8 +158,7 @@ export function parse(src: string): any[] {
     return { k: 'expr', e, show: endOfStmt() };
   }
   function lvalue(e: any) {
-    if (e.k === 'id') return { n: e.n, args: null };
-    if (e.k === 'idx') return { n: e.n, args: e.args };
+    if (e.k === 'id' || e.k === 'idx' || e.k === 'cellidx' || e.k === 'field') return e;
     return err('invalid assignment target');
   }
   function endBlock() { const b = block(['end']); if (!isKw('end')) err("missing 'end'"); p++; return b; }
@@ -208,7 +229,18 @@ export function parse(src: string): any[] {
   }
   function primaryPostfix(): any {
     let e = primary();
-    while (isOp("'") || isOp(".'")) { p++; e = { k: 'post', a: e }; }
+    for (;;) {
+      if (isOp("'") || isOp(".'")) { p++; e = { k: 'post', a: e }; continue; }
+      if (isOp('(')) { p++; e = { k: 'apply', a: e, args: args(')') }; continue; }
+      if (isOp('{')) { p++; e = { k: 'cellidx', a: e, args: args('}') }; continue; }
+      if (isOp('.')) {
+        p++;
+        if (peek().t !== 'id') err('expected a field name after "."');
+        e = { k: 'field', a: e, n: nxt().v };
+        continue;
+      }
+      break;
+    }
     return e;
   }
   function primary(): any {
@@ -222,6 +254,16 @@ export function parse(src: string): any[] {
     }
     if (t.t === 'op') {
       if (t.v === '(') { const saved = inMat; inMat = false; const e = expr(); inMat = saved; expectOp(')'); return { k: 'paren', a: e }; }
+      if (t.v === '{') {
+        const saved = inMat; inMat = true; const rows: any[][] = []; let row: any[] = [];
+        while (!isOp('}')) {
+          if (peek().t === 'eof') err("missing '}'");
+          if (isOp(';')) { p++; if (row.length) rows.push(row); row = []; continue; }
+          if (isOp(',')) { p++; continue; }
+          row.push(expr());
+        }
+        p++; if (row.length) rows.push(row); inMat = saved; return { k: 'cellmat', rows };
+      }
       if (t.v === '[') {
         const saved = inMat; inMat = true; const rows: any[][] = []; let row: any[] = [];
         while (!isOp(']')) {

@@ -25,7 +25,7 @@ let I = new Interp(host);
 function summary() {
   const out: any[] = [];
   for (const [name, v] of I.vars as Map<string, any>) {
-    if (v && Array.isArray(v.dims)) out.push({ name, size: v.dims.join('x'), cls: v.cls, bytes: v.data.length * (v.cls === 'double' ? 8 : v.cls === 'char' ? 2 : 1) });
+    if (v && Array.isArray(v.dims)) out.push({ name, size: v.dims.join('x'), cls: v.cls, bytes: v.data.length * (v.cls === 'double' || v.cls === 'cell' ? 8 : v.cls === 'char' ? 2 : 1) });
     else out.push({ name, size: '1x1', cls: 'struct', bytes: 0 });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));

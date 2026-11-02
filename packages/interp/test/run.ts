@@ -91,6 +91,16 @@ r = imread('result.png'); s = size(r);`, (_o, I) => eq(val(I, 's'), [60, 50]));
 run('Tier-2: resize / rotate / im2double / imhist', `a=imread('testgray.png'); b=imresize(a,0.5,'nearest'); c=imrotate(a,90); d=im2double(a); h=imhist(a); s=[size(b) size(c) numel(h) sum(h)]; m=max(d(:));`, (_o, I) => eq([val(I, 's'), val(I, 'm')[0] <= 1], [[100, 100, 200, 200, 256, 40000], true]));
 
 console.log('Core extras');
+run('switch case and otherwise', `x=2; switch x\ncase 1\ny=10;\ncase 2\ny=20;\notherwise\ny=30;\nend`, (_o, I) => eq(val(I, 'y'), [20]));
+run('switch break exits switch and continue reaches loop', `s=0; for i=1:4, switch i, case 2, continue; case 3, break; otherwise, s=s+i; end, s=s+10; end`, (_o, I) => eq(val(I, 's'), [35]));
+run('cell literal, contents indexing, assignment and cell constructor', `C={1,'hi';[2 3],false}; a=C{1}; C{3}=9; b=C{3}; d=C(4); e=iscell(C); F=cell(2,3);`, (_o, I) => eq([val(I, 'a'), val(I, 'b'), val(I, 'e'), val(I, 'F')], [[1], [9], [1], []]) && (I.vars.get('d') as any).cls === 'cell' && (I.vars.get('F') as any).dims.join(',') === '2,3');
+run('multidimensional cell indexing and end', `C={1,2;3,4}; x=C{2,2}; C{1,2}=9; y=C{end}; R=C(2,:);`, (_o, I) => eq([val(I, 'x'), val(I, 'y')], [[4], [4]]) && (I.vars.get('R') as any).data.map((v: any) => v.data[0]).join(',') === '3,4');
+run('cell assignment preserves value semantics', `C={1}; D=C; D{1}=2; x=C{1}; y=D{1};`, (_o, I) => eq([val(I, 'x'), val(I, 'y')], [[1], [2]]));
+run('struct field read, write and nested fields', `s=struct('x',5); s.y='ok'; s.nested.value=7; a=s.x; b=s.y; c=s.nested.value;`, (_o, I) => eq([val(I, 'a'), val(I, 'c')], [[5], [7]]) && String.fromCharCode(...val(I, 'b')) === 'ok');
+run('nested struct assignment preserves value semantics', `a=struct('child',struct('v',1)); b=a; b.child.v=2; x=a.child.v; y=b.child.v;`, (_o, I) => eq([val(I, 'x'), val(I, 'y')], [[1], [2]]));
+run('imfinfo struct field access', `info=imfinfo('test.png'); w=info.Width;`, (_o, I) => eq(val(I, 'w'), [200]));
+run('histeq preserves class and shape, returns transform', `a=uint8([0 0 255 255]); [b,t]=histeq(a,2); c=double([0 .5 1]); d=histeq(c,3); st=size(t);`, (_o, I) => eq([val(I, 'b'), val(I, 'd'), val(I, 'st')], [[0, 0, 255, 255], [0, 0.5, 1], [256, 1]]));
+run('help command exposes feature documentation', `help histeq`, o => /histogram equalization/.test(o));
 run('constants and while true/break', `k=0; while true, k=k+1; if k>=3, break; end, end; t=true; f=false(1,2); p=pi>3;`, (_o, I) => eq([val(I, 'k'), val(I, 't'), val(I, 'f'), val(I, 'p')], [[3], [1], [0, 0], [1]]));
 run('any/all/find/sort/cumsum/prod/linspace', `a=[3 1 2]; [s,i]=sort(a); f=find(a>1); c=cumsum(a); p=prod(a); l=linspace(0,1,5); an=any(a>2); al=all(a>2);`, (_o, I) => eq([val(I,'s'),val(I,'i'),val(I,'f'),val(I,'c'),val(I,'p'),val(I,'l'),val(I,'an'),val(I,'al')], [[1,2,3],[2,3,1],[1,3],[3,4,6],[6],[0,0.25,0.5,0.75,1],[1],[0]]));
 run('reshape/repmat/flip', `a=reshape(1:6,2,3); b=repmat([1 2],2,2); c=fliplr([1 2 3]); d=flipud([1;2]);`, (_o, I) => eq([val(I,'a'),val(I,'b'),val(I,'c'),val(I,'d')], [[1,2,3,4,5,6],[1,1,2,2,1,1,2,2],[3,2,1],[2,1]]));

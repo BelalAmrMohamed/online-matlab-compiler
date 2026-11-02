@@ -17,8 +17,8 @@ const m = await build({ entryPoints: [path.join(here, 'src/main.ts')], bundle: t
 const js = m.outputFiles[0].text.replace(/<\/script/gi, '<\\/script');
 const css = readFileSync(path.join(here, 'src/style.css'), 'utf8');
 const jsonld = JSON.stringify({ '@context': 'https://schema.org', '@graph': [
-  { '@type': 'WebApplication', name: 'MLWeb', url: SITE + '/', applicationCategory: 'EducationalApplication', operatingSystem: 'Any (web browser)', inLanguage: 'en',
-    description: 'Free online MATLAB-style notebook for learning image processing in the browser, with 9 ready lessons and exercises.', offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+  { '@type': 'WebApplication', name: 'MLWeb', url: SITE + '/', applicationCategory: 'EducationalApplication', operatingSystem: 'Any (web browser)', inLanguage: ['en', 'ar'],
+    description: 'Free online MATLAB-style notebook for learning image processing in the browser, with 10 ready lessons and exercises.', offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
     image: SITE + '/og-image.jpg', author: { '@type': 'Person', name: 'Belal Amr Mohamed', url: 'https://belal-amr.vercel.app' } },
   { '@type': 'Person', name: 'Belal Amr Mohamed', url: 'https://belal-amr.vercel.app' }] }).replace(/</g, '\\u003c');
 const lessonList = lessons.map(l => `<li><a href="${SITE}/#${l.id}">${l.title}</a></li>`).join('');

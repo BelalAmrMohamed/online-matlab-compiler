@@ -1,5 +1,5 @@
 import { parse, MatlabError } from './parser';
-import { T, V, S, Idx, Cls, isT, mk, num, str, toStr, isStr, scalarOf, numel, sat, ew, binop, transpose, index, assign, cat, display, dimStr, PrintOpts } from './values';
+import { T, V, S, C, Idx, Cls, isT, isC, mk, num, str, toStr, isStr, scalarOf, numel, sat, ew, binop, transpose, index, assign, cat, display, dimStr, PrintOpts } from './values';
 
 // ---------- host interface (browser UI and Node tests each implement this) ----------
 export interface RawImage { width: number; height: number; channels: 1 | 3; data: Uint8Array; /* row-major, interleaved */
@@ -24,7 +24,7 @@ const T_ = (v: V, fn: string): T => isT(v) ? v : err(`Error using ${fn}: Invalid
 export class Interp {
   vars: Scope = new Map();
   funcs = new Map<string, any>();
-  private endStack: { t: T; pos: number; n: number }[] = [];
+  private endStack: { t: { dims: number[]; data: { length: number } }; pos: number; n: number }[] = [];
   private depth = 0;
   constructor(public host: Host) {}
   get opts(): PrintOpts { return { maxElements: this.host.maxPrintElements ?? 3000, width: 80 }; }
@@ -36,7 +36,14 @@ export class Interp {
   }
   private store(sc: Scope, name: string, v: V) {
     if (isT(v)) { if ((v as any).held) v = { ...v, data: v.data.slice() }; (v as any).held = true; }
+    else if (isC(v)) v = { cls: 'cell', dims: v.dims.slice(), data: v.data.map(x => this.cloneValue(x)) };
+    else v = { cls: 'struct', fields: v.fields.map(([k, x]) => [k, this.cloneValue(x)]) };
     sc.set(name, v);
+  }
+  private cloneValue(v: V): V {
+    if (isT(v)) return { cls: v.cls, dims: v.dims.slice(), data: v.data.slice() };
+    if (isC(v)) return { cls: 'cell', dims: v.dims.slice(), data: v.data.map(x => this.cloneValue(x)) };
+    return { cls: 'struct', fields: v.fields.map(([k, x]) => [k, this.cloneValue(x)]) };
   }
   private show(name: string, v: V) { this.host.print(display(name, v, this.opts)); }
 
@@ -49,6 +56,17 @@ export class Interp {
           if (e.k === 'id' && sc.has(e.n)) { if (s.show) this.show(e.n, sc.get(e.n)!); break; }
           const r = this.evalMulti(e, sc, 0);
           if (r.length) { this.store(sc, 'ans', r[0]); if (s.show) this.show('ans', sc.get('ans')!); }
+          break;
+        }
+        case 'switch': {
+          const value = this.eval(s.value, sc);
+          let selected: any[] | null = null;
+          for (const c of s.cases) {
+            if (this.sameCase(value, this.eval(c.match, sc))) { selected = c.body; break; }
+          }
+          const r = this.exec(selected ?? s.otherwise ?? [], sc);
+          if (r === BRK) break;
+          if (r) return r;
           break;
         }
         case 'assign': {
@@ -92,18 +110,60 @@ export class Interp {
   }
   private truthy(v: V): boolean { const t = T_(v, 'if'); return t.data.length > 0 && t.data.every(x => x !== 0); }
 
-  private assignTo(sc: Scope, lv: { n: string; args: any[] | null }, val: V) {
-    if (!lv.args) return this.store(sc, lv.n, val);
-    const cur = sc.get(lv.n) as T | undefined, rhs = T_(val, 'assignment');
-    if (cur !== undefined && !isT(cur)) err('Invalid indexed assignment to a struct.');
-    const ix = this.evalArgs(lv.args, cur ?? null, sc);
-    // fast path: scalar subscripts inside bounds -> mutate in place (each variable owns its tensor)
-    if (cur && ix.length >= 2 && rhs.data.length === 1 && ix.every(a => a !== 'colon' && a.data.length === 1 && a.cls !== 'logical') && ix.length === cur.dims.length) {
-      let off = 0, m = 1, ok = true;
-      for (let d = 0; d < ix.length; d++) { const v = (ix[d] as T).data[0]; if (!(v >= 1 && v <= cur.dims[d] && v === Math.floor(v))) { ok = false; break; } off += (v - 1) * m; m *= cur.dims[d]; }
-      if (ok) { cur.data[off] = sat(cur.cls, rhs.data[0]); return; }
+  private sameCase(a: V, b: V): boolean {
+    if (isT(a) && isT(b)) return a.cls === b.cls && a.dims.join(',') === b.dims.join(',') && a.data.length === b.data.length && a.data.every((x, i) => x === b.data[i]);
+    if (isC(a) && isC(b)) return a.dims.join(',') === b.dims.join(',') && a.data.length === b.data.length && a.data.every((x, i) => this.sameCase(x, b.data[i]));
+    if (!isT(a) && !isT(b) && !isC(a) && !isC(b)) return a.fields.length === b.fields.length && a.fields.every(([k, v], i) => k === b.fields[i][0] && this.sameCase(v, b.fields[i][1]));
+    return false;
+  }
+  private assignTo(sc: Scope, lv: any, val: V) {
+    if (lv.k === 'id') return this.store(sc, lv.n, val);
+    if (lv.k === 'field') {
+      const path: string[] = [];
+      let base = lv;
+      while (base.k === 'field') { path.unshift(base.n); base = base.a; }
+      if (base.k !== 'id') err('Invalid structure assignment.');
+      const current = sc.get(base.n);
+      let root: S;
+      if (!current) root = { cls: 'struct', fields: [] };
+      else if (isT(current) || isC(current)) throw new MatlabError('Dot indexing is not supported for this value.');
+      else root = { cls: 'struct', fields: current.fields.slice() };
+      let parent = root;
+      for (const name of path.slice(0, -1)) {
+        let nested = parent.fields.find(([k]) => k === name)?.[1];
+        if (!nested) {
+          nested = { cls: 'struct', fields: [] } as S;
+          parent.fields.push([name, nested]);
+        }
+        if (isT(nested) || isC(nested)) err(`Cannot create field '${name}' on this value.`);
+        parent = nested;
+      }
+      const name = path[path.length - 1], i = parent.fields.findIndex(([k]) => k === name);
+      if (i < 0) parent.fields.push([name, val]); else parent.fields[i] = [name, val];
+      this.store(sc, base.n, root);
+      return;
     }
-    const res = assign(cur, ix, rhs, cur !== undefined); (res as any).held = true; sc.set(lv.n, res);
+    if (lv.k === 'cellidx') {
+      if (lv.a.k !== 'id') err('Cell assignment requires a named cell array.');
+      const current = sc.get(lv.a.n);
+      if (!current || !isC(current)) throw new MatlabError('Brace indexing is only supported for cell arrays.');
+      const positions = this.cellPositions(current, lv.args, sc).positions;
+      if (positions.length !== 1) err('Cell assignment requires one selected cell.');
+      current.data[positions[0]] = val;
+      return;
+    }
+    if (lv.k !== 'idx') err('Invalid assignment target.');
+    const cur = sc.get(lv.n), rhs = T_(val, 'assignment');
+    if (cur !== undefined && !isT(cur)) throw new MatlabError('Invalid indexed assignment to a non-numeric value.');
+    const numericCur = isT(cur) ? cur : undefined;
+    const ix = this.evalArgs(lv.args, numericCur ?? null, sc);
+    // fast path: scalar subscripts inside bounds -> mutate in place (each variable owns its tensor)
+    if (numericCur && ix.length >= 2 && rhs.data.length === 1 && ix.every(a => a !== 'colon' && a.data.length === 1 && a.cls !== 'logical') && ix.length === numericCur.dims.length) {
+      let off = 0, m = 1, ok = true;
+      for (let d = 0; d < ix.length; d++) { const v = (ix[d] as T).data[0]; if (!(v >= 1 && v <= numericCur.dims[d] && v === Math.floor(v))) { ok = false; break; } off += (v - 1) * m; m *= numericCur.dims[d]; }
+      if (ok) { numericCur.data[off] = sat(numericCur.cls, rhs.data[0]); return; }
+    }
+    const res = assign(numericCur, ix, rhs, !!numericCur); (res as any).held = true; sc.set(lv.n, res);
   }
 
   // ---------- expressions ----------
@@ -150,16 +210,93 @@ export class Interp {
         const rows = e.rows.map((r: any[]) => cat(1, r.map(x => T_(this.eval(x, sc), '[]'))));
         return rows.length ? cat(0, rows) : mk('double', [0, 0]);
       }
+      case 'cellmat': {
+        if (!e.rows.length) return { cls: 'cell', dims: [0, 0], data: [] } as C;
+        const cols = e.rows[0].length;
+        if (e.rows.some((r: any[]) => r.length !== cols)) err('Cell array rows must have the same number of elements.');
+        const data = new Array<V>(e.rows.length * cols);
+        e.rows.forEach((r: any[], row: number) => r.forEach((x, col) => { data[row + e.rows.length * col] = this.eval(x, sc); }));
+        return { cls: 'cell', dims: [e.rows.length, cols], data } as C;
+      }
+      case 'field': {
+        const base = this.eval(e.a, sc);
+        if (isT(base) || isC(base)) throw new MatlabError('Dot indexing is not supported for this value.');
+        const value = base.fields.find(([k]) => k === e.n)?.[1];
+        return value ?? err(`Unrecognized field name '${e.n}'.`);
+      }
+      case 'cellidx': return this.cellIndex(e, sc, true);
+      case 'apply': {
+        const base = this.eval(e.a, sc);
+        if (isC(base)) return this.cellIndex({ ...e, a: { k: 'value', v: base } }, sc, false);
+        return index(T_(base, 'indexing'), this.evalArgs(e.args, isT(base) ? base : null, sc));
+      }
       case 'idx': {
         const v = sc.get(e.n);
-        if (v) { const t = T_(v, 'indexing'); return index(t, this.evalArgs(e.args, t, sc)); }
+        if (v) {
+          if (isC(v)) {
+            const { positions, dims } = this.cellPositions(v, e.args, sc);
+            return { cls: 'cell', dims, data: positions.map(i => v.data[i]) } as C;
+          }
+          const t = T_(v, 'indexing'); return index(t, this.evalArgs(e.args, t, sc));
+        }
         const r = this.callFn(e.n, e.args.map((a: any) => (a.k === 'colon' ? str(':') : this.eval(a, sc))), 1);
         return r[0] ?? err(`Error using ${e.n}: Too many output arguments.`);
       }
     }
     return err('Unsupported expression: ' + e.k);
   }
-  private evalArgs(args: any[], base: T | null, sc: Scope): Idx[] {
+  private cellIndex(e: any, sc: Scope, contents: boolean): V {
+    let base: V;
+    if (e.a.k === 'value') base = e.a.v;
+    else base = this.eval(e.a, sc);
+    if (!isC(base)) throw new MatlabError('Brace indexing is only supported for cell arrays.');
+    const { positions, dims } = this.cellPositions(base, e.args, sc);
+    if (contents) {
+      if (positions.length !== 1) err('Brace indexing requires a single cell selection.');
+      return base.data[positions[0]];
+    }
+    return { cls: 'cell', dims, data: positions.map(i => base.data[i]) } as C;
+  }
+  private cellPositions(base: C, args: any[], sc: Scope): { positions: number[]; dims: number[] } {
+    if (!args.length) err('Cell indexing requires at least one subscript.');
+    const ix = this.evalArgs(args, base, sc);
+    let dims = base.dims.slice();
+    if (ix.length === 1) {
+      const x = ix[0];
+      if (x === 'colon') return { positions: base.data.map((_v, i) => i), dims: [base.data.length, 1] };
+      if (x.cls === 'logical' && x.data.length !== base.data.length) err('Logical index must contain the same number of elements as the cell array.');
+      const positions = x.cls === 'logical'
+        ? Array.from(x.data, (v, i) => v ? i : -1).filter(i => i >= 0)
+        : Array.from(x.data, v => v - 1);
+      if (positions.some(i => !Number.isInteger(i) || i < 0 || i >= base.data.length)) err('Cell index exceeds array bounds.');
+      const srcVector = dims.length === 2 && (dims[0] === 1 || dims[1] === 1);
+      const idxVector = x.dims.length === 2 && (x.dims[0] === 1 || x.dims[1] === 1);
+      let resultDims = x.cls === 'logical' ? [positions.length, 1] : x.dims.slice();
+      if (srcVector && idxVector && x.cls !== 'logical') resultDims = dims[0] === 1 ? [1, positions.length] : [positions.length, 1];
+      return { positions, dims: resultDims };
+    }
+    if (ix.length < dims.length) dims = dims.slice(0, ix.length - 1).concat([numel(dims.slice(ix.length - 1))]);
+    while (dims.length < ix.length) dims.push(1);
+    const lists = ix.map((x, d) => {
+      if (x === 'colon') return Array.from({ length: dims[d] }, (_v, i) => i);
+      if (x.cls === 'logical' && x.data.length !== dims[d]) err(`Logical index in position ${d + 1} has an incompatible size.`);
+      const values = x.cls === 'logical'
+        ? Array.from(x.data, (v, i) => v ? i : -1).filter(i => i >= 0)
+        : Array.from(x.data, v => v - 1);
+      if (values.some(i => !Number.isInteger(i) || i < 0 || i >= dims[d])) err(`Cell index in position ${d + 1} exceeds array bounds.`);
+      return values;
+    });
+    const resultDims = lists.map(list => list.length), positions: number[] = [];
+    const sub = new Array(ix.length).fill(0), strides = [1];
+    for (let d = 1; d < ix.length; d++) strides.push(strides[d - 1] * dims[d - 1]);
+    const count = numel(resultDims);
+    for (let i = 0; i < count; i++) {
+      positions.push(lists.reduce((offset, list, d) => offset + list[sub[d]] * strides[d], 0));
+      for (let d = 0; d < sub.length; d++) { if (++sub[d] < resultDims[d]) break; sub[d] = 0; }
+    }
+    return { positions, dims: resultDims };
+  }
+  private evalArgs(args: any[], base: { dims: number[]; data: { length: number } } | null, sc: Scope): Idx[] {
     return args.map((a, i) => {
       if (a.k === 'colon') return 'colon';
       if (a.k === 'num') return num(a.v);
@@ -205,17 +342,19 @@ function dimsFrom(a: V[], fn: string): { dims: number[]; cls: Cls } {
 def('zeros', a => { const { dims, cls } = dimsFrom(a, 'zeros'); return [mk(cls, dims)]; });
 def('ones', a => { const { dims, cls } = dimsFrom(a, 'ones'); const t = mk(cls, dims); t.data.fill(1); return [t]; });
 def('size', (a, n) => {
-  const t = T_(a[0], 'size'), d = t.dims;
+  const t = a[0], d = isT(t) || isC(t) ? t.dims : [1, 1];
   if (a.length > 1) { const k = scalarOf(a[1]); return [num(d[k - 1] ?? 1)]; }
   if (n <= 1) return [mk('double', [1, d.length], d)];
   const out: V[] = []; for (let i = 0; i < n; i++) out.push(num(i < n - 1 ? (d[i] ?? 1) : numel(d.slice(i))));
   return out;
 });
-def('numel', a => [num(T_(a[0], 'numel').data.length)]);
-def('length', a => { const t = T_(a[0], 'length'); return [num(t.data.length ? Math.max(...t.dims) : 0)]; });
-def('ndims', a => [num(T_(a[0], 'ndims').dims.length)]);
-def('isempty', a => [num(+(T_(a[0], 'isempty').data.length === 0), 'logical')]);
-def('class', a => [str(isT(a[0]) ? a[0].cls : 'struct')]);
+def('numel', a => [num(isT(a[0]) || isC(a[0]) ? a[0].data.length : 1)]);
+def('length', a => { const d = isT(a[0]) || isC(a[0]) ? a[0].dims : [1, 1]; return [num(numel(d) ? Math.max(...d) : 0)]; });
+def('ndims', a => [num(isT(a[0]) || isC(a[0]) ? a[0].dims.length : 2)]);
+def('isempty', a => [num(+(isT(a[0]) || isC(a[0]) ? a[0].data.length === 0 : false), 'logical')]);
+def('class', a => [str(isT(a[0]) ? a[0].cls : isC(a[0]) ? 'cell' : 'struct')]);
+def('iscell', a => [num(+isC(a[0]), 'logical')]);
+def('isstruct', a => [num(+(!isT(a[0]) && !isC(a[0])), 'logical')]);
 const conv = (cls: Cls): Builtin => a => { const t = T_(a[0], cls); return [{ cls, dims: t.dims.slice(), data: t.data.map(v => sat(cls, v)) }]; };
 def('double', conv('double')); def('uint8', conv('uint8')); def('logical', conv('logical'));
 const map1 = (f: (x: number) => number): Builtin => a => { const t = T_(a[0], 'math'); const cls = t.cls === 'uint8' ? 'uint8' : 'double'; return [{ cls, dims: t.dims.slice(), data: t.data.map(v => sat(cls, f(v))) }]; };
@@ -273,16 +412,44 @@ def('disp', (a, _n, I) => {
 });
 def('clc', (_a, _n, I) => { I.host.clc?.(); return []; });
 def('clear clearvars', (a, _n, I) => { if (!a.length || toStr(a[0]) === 'all') I.vars.clear(); else a.forEach(x => I.vars.delete(toStr(x))); return []; });
+def('struct', a => {
+  if (a.length % 2 !== 0) err('Error using struct: inputs must be field-name/value pairs.');
+  const fields: [string, V][] = [];
+  for (let i = 0; i < a.length; i += 2) {
+    if (!isStr(a[i])) err('Error using struct: field names must be character vectors.');
+    fields.push([toStr(a[i]), a[i + 1]]);
+  }
+  return [{ cls: 'struct', fields } as S];
+});
+def('cell', a => {
+  const { dims } = dimsFrom(a, 'cell');
+  return [{ cls: 'cell', dims, data: Array.from({ length: numel(dims) }, () => mk('double', [0, 0])) } as C];
+});
 def('who', (_a, _n, I) => { if (I.vars.size) I.host.print('Your variables are:\n\n' + [...I.vars.keys()].sort().join('  ') + '\n\n'); return []; });
 def('whos', (_a, _n, I) => {
   if (!I.vars.size) return [];
-  const rows = [...I.vars.entries()].sort().map(([k, v]) => isT(v) ? [k, dimStr(v.dims).replace(/×/g, 'x'), String(v.data.length * (v.cls === 'double' ? 8 : v.cls === 'char' ? 2 : 1)), v.cls] : [k, '1x1', '-', 'struct']);
+  const rows = [...I.vars.entries()].sort().map(([k, v]) => isT(v) || isC(v) ? [k, dimStr(v.dims).replace(/×/g, 'x'), String(v.data.length * (isC(v) ? 8 : v.cls === 'double' ? 8 : v.cls === 'char' ? 2 : 1)), v.cls] : [k, '1x1', '-', 'struct']);
   const w = [4, 4, 5, 5].map((m, i) => Math.max(m, ...rows.map(r => r[i].length)));
   let s = `  ${'Name'.padEnd(w[0])}  ${'Size'.padEnd(w[1])}  ${'Bytes'.padStart(w[2])}  ${'Class'.padEnd(w[3])}  Attributes\n\n`;
   for (const r of rows) s += `  ${r[0].padEnd(w[0])}  ${r[1].padEnd(w[1])}  ${r[2].padStart(w[2])}  ${r[3].padEnd(w[3])}\n`;
   I.host.print(s + '\n'); return [];
 });
-def('help doc lookfor format hold close', () => []);
+def('help doc lookfor', (a, _n, I) => {
+  const topic = a[0] && isStr(a[0]) ? toStr(a[0]).toLowerCase() : '';
+  const descriptions: Record<string, string> = {
+    imread: 'Read an image from the Current Folder: A = imread(filename).',
+    imshow: 'Display an image in a figure: imshow(A).',
+    imwrite: 'Write an image into the Current Folder: imwrite(A, filename).',
+    histeq: 'Enhance grayscale contrast with histogram equalization: B = histeq(A) or B = histeq(A, levels).',
+    switch: 'Select a matching case: switch value; case value; ...; otherwise; ...; end.',
+    cell: 'Create a cell array with cell(m,n), or use a literal such as C = {1, "text"}.',
+    struct: "Create a scalar structure with struct('field', value); read fields using s.field."
+  };
+  if (topic && descriptions[topic]) I.host.print(descriptions[topic] + '\n');
+  else I.host.print('MLWeb help: supported educational MATLAB subset. Try imread, imshow, histeq, switch, cell, struct, size, or help command.\n');
+  return [];
+});
+def('format hold close', () => []);
 def('figure', (_a, _n, I) => { I.host.newFigure(); return []; });
 
 // =====================================================================================
@@ -395,7 +562,52 @@ def('imhist', (a, n) => {
   for (const v of t.data) o.data[t.cls === 'double' ? Math.min(255, Math.max(0, Math.round(v * 255))) : v]++;
   return [o];
 });
-def('histeq', () => err('histeq is not implemented yet.'));
+def('histeq', (a, nargout) => {
+  const image = T_(a[0], 'histeq');
+  if (image.dims.length !== 2) err('Error using histeq: input must be a two-dimensional grayscale image.');
+  if (image.cls === 'double' && image.data.some(v => v < 0 || v > 1)) err('Error using histeq: double input values must be in the range [0, 1].');
+  const inputBins = image.cls === 'logical' ? 2 : 256;
+  const requested = a[1] ? T_(a[1], 'histeq') : null;
+  let target: number[];
+  if (requested && requested.data.length > 1) {
+    if (requested.data.some(v => v < 0)) err('Error using histeq: histogram values must be nonnegative.');
+    target = Array.from(requested.data);
+  } else {
+    const levels = requested ? scalarOf(requested, 'number of levels') : 64;
+    if (!Number.isInteger(levels) || levels < 2 || levels > 65536) err('Error using histeq: number of levels must be an integer between 2 and 65536.');
+    target = Array.from({ length: levels }, () => 1);
+  }
+  const hist = new Array(inputBins).fill(0);
+  for (const value of image.data) {
+    const bin = image.cls === 'uint8' || image.cls === 'logical' ? Math.round(value) : Math.min(inputBins - 1, Math.floor(value * inputBins));
+    hist[bin]++;
+  }
+  const targetSum = target.reduce((sum, v) => sum + v, 0);
+  if (targetSum <= 0) err('Error using histeq: target histogram must contain a positive value.');
+  const targetCdf: number[] = [];
+  let cumulative = 0;
+  for (const count of target) { cumulative += count / targetSum; targetCdf.push(cumulative); }
+  const total = image.data.length;
+  const sourceCdf: number[] = [];
+  cumulative = 0;
+  for (const count of hist) { cumulative += count / (total || 1); sourceCdf.push(cumulative); }
+  const first = sourceCdf.find(x => x > 0) ?? 0;
+  const lut = new Float64Array(inputBins);
+  for (let i = 0; i < inputBins; i++) {
+    const cdf = total ? (sourceCdf[i] - first) / Math.max(Number.EPSILON, 1 - first) : 0;
+    let j = 0;
+    while (j < targetCdf.length - 1 && targetCdf[j] < cdf) j++;
+    const normalized = image.cls === 'uint8' || image.cls === 'logical' ? j / Math.max(1, target.length - 1) : j / Math.max(1, target.length - 1);
+    lut[i] = image.cls === 'uint8' ? Math.round(normalized * 255) : image.cls === 'logical' ? +(normalized >= 0.5) : normalized;
+  }
+  const out = mk(image.cls, image.dims.slice());
+  for (let i = 0; i < image.data.length; i++) {
+    const value = image.data[i], bin = image.cls === 'uint8' || image.cls === 'logical' ? Math.round(value) : Math.min(inputBins - 1, Math.floor(value * inputBins));
+    out.data[i] = lut[bin];
+  }
+  const transform = mk(image.cls, [inputBins, 1], lut);
+  return nargout > 1 ? [out, transform] : [out];
+});
 
 // ---------- core extras (constants, math, reductions, array helpers, image arithmetic) ----------
 const constFn = (v: number, cls: Cls = 'double'): Builtin => a => { if (!a.length) return [num(v, cls)]; const { dims } = dimsFrom(a, 'const'); const t = mk(cls, dims); t.data.fill(v); return [t]; };

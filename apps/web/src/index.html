@@ -6,12 +6,13 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>MLWeb – Free Online MATLAB Image Processing Notebook | Belal Amr Mohamed</title>
   <meta name="description"
-    content="Free online MATLAB-style notebook for learning image processing in your browser: imread, imshow, color spaces, cropping, thresholding. 9 ready lessons with exercises. No install, no sign-up.">
+    content="Free online MATLAB-style notebook for learning image processing in your browser: imread, imshow, color spaces, cropping, thresholding, and histeq. 10 ready lessons with exercises. No install, no sign-up.">
   <meta name="keywords"
     content="online MATLAB, MATLAB online compiler, image processing, imread, imshow, rgb2gray, HSV, YCbCr, thresholding, cropping, learn MATLAB, MATLAB notebook, Belal Amr Mohamed">
   <meta name="author" content="Belal Amr Mohamed">
   <meta name="robots" content="index,follow,max-image-preview:large">
   <meta name="theme-color" content="#c2410c">
+  <meta name="color-scheme" content="light dark">
   <link rel="canonical" href="%%SITE%%/">
   <link rel="icon" href="/favicon.ico" sizes="any">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
@@ -22,7 +23,7 @@
   <meta property="og:site_name" content="MLWeb">
   <meta property="og:title" content="MLWeb – Learn MATLAB Image Processing Online">
   <meta property="og:description"
-    content="Run MATLAB-style image processing code in your browser. 9 ready lessons with exercises, a pixel inspector and instant results. Free, no install.">
+    content="Run MATLAB-style image processing code in your browser. 10 ready lessons with exercises, a pixel inspector and instant results. Free, no install.">
   <meta property="og:url" content="%%SITE%%/">
   <meta property="og:image" content="%%SITE%%/og-image.jpg">
   <meta property="og:image:width" content="1200">
@@ -32,7 +33,7 @@
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="MLWeb – Learn MATLAB Image Processing Online">
   <meta name="twitter:description"
-    content="Run MATLAB-style image processing code in your browser. 9 ready lessons with exercises. Free, no install.">
+    content="Run MATLAB-style image processing code in your browser. 10 ready lessons with exercises. Free, no install.">
   <meta name="twitter:image" content="%%SITE%%/og-image.jpg">
   <script type="application/ld+json">%%JSONLD%%</script>
   <style>
@@ -45,10 +46,23 @@
     <div class="brand"><b>MLWeb</b><span>open MATLAB-style notebook</span></div>
     <div class="actions" id="actions"></div>
   </header>
+  <section id="welcome" aria-live="polite"></section>
   <div id="layout">
     <main id="nb"></main>
     <aside id="side"></aside>
   </div>
+  <dialog id="helpDialog" aria-labelledby="helpTitle">
+    <div class="help-head">
+      <h2 id="helpTitle">MLWeb help</h2>
+      <button id="closeHelp" type="button" aria-label="Close help">Close</button>
+    </div>
+    <div class="help-body">
+      <p id="helpIntro">Search the supported MATLAB-style commands and notebook shortcuts.</p>
+      <input id="helpSearch" type="search" placeholder="Search commands…" autocomplete="off">
+      <div id="helpItems"></div>
+    </div>
+  </dialog>
+  <div id="notice" role="status" aria-live="polite" hidden></div>
   <footer id="credit">Made by <a href="https://belal-amr.vercel.app" target="_blank" rel="noopener author">Belal Amr
       Mohamed</a></footer>
   <noscript>

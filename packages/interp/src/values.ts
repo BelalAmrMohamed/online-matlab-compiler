@@ -3,8 +3,10 @@ import { MatlabError } from './parser';
 export type Cls = 'double' | 'uint8' | 'logical' | 'char';
 export interface T { cls: Cls; dims: number[]; data: Float64Array }
 export interface S { cls: 'struct'; fields: [string, any][] }
-export type V = T | S;
+export interface C { cls: 'cell'; dims: number[]; data: V[] }
+export type V = T | S | C;
 export const isT = (v: any): v is T => !!v && Array.isArray(v.dims);
+export const isC = (v: any): v is C => !!v && v.cls === 'cell' && Array.isArray(v.dims) && Array.isArray(v.data);
 export const numel = (d: number[]) => d.reduce((a, b) => a * b, 1);
 
 export function sat(cls: Cls, v: number): number {
@@ -241,6 +243,7 @@ function fmtSlice(t: T, off: number, rows: number, cols: number): string {
   return out;
 }
 export function display(name: string, v: V, o: PrintOpts): string {
+  if (isC(v)) return `${name} =\n\n  ${dimStr(v.dims)} cell array\n\n` + v.data.map((x, i) => `    {${i + 1}}  ${inline(x)}`).join('\n') + '\n\n';
   if (!isT(v)) {
     const w = Math.max(...v.fields.map(([k]) => k.length));
     return `${name} = \n\n  struct with fields:\n\n` + v.fields.map(([k, x]) => `    ${k.padStart(w)}: ${inline(x)}`).join('\n') + '\n\n';
@@ -260,6 +263,7 @@ export function display(name: string, v: V, o: PrintOpts): string {
 }
 const scalarStr = (x: number, cls: Cls) => (cls === 'double' && !Number.isInteger(x) ? (Number.isFinite(x) ? x.toFixed(4) : x > 0 ? 'Inf' : x < 0 ? '-Inf' : 'NaN') : String(x));
 function inline(x: any): string {
+  if (isC(x)) return `{${dimStr(x.dims)} cell}`;
   if (!isT(x)) return '[1×1 struct]';
   if (x.cls === 'char') return `'${toStr(x)}'`;
   if (x.data.length === 1) return scalarStr(x.data[0], x.cls);
