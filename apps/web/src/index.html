@@ -12,7 +12,6 @@
   <meta name="author" content="Belal Amr Mohamed">
   <meta name="robots" content="index,follow,max-image-preview:large">
   <meta name="theme-color" content="#c2410c">
-  <meta name="color-scheme" content="light dark">
   <link rel="canonical" href="%%SITE%%/">
   <link rel="icon" href="/favicon.ico" sizes="any">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
@@ -43,10 +42,9 @@
 
 <body>
   <header id="bar">
-    <div class="brand"><b>MLWeb</b><span>open MATLAB-style notebook</span></div>
+    <div class="brand"><b>MLWeb</b></div>
     <div class="actions" id="actions"></div>
   </header>
-  <section id="welcome" aria-live="polite"></section>
   <div id="layout">
     <main id="nb"></main>
     <aside id="side"></aside>
@@ -62,7 +60,42 @@
       <div id="helpItems"></div>
     </div>
   </dialog>
-  <div id="notice" role="status" aria-live="polite" hidden></div>
+  <dialog id="confirmDialog" aria-labelledby="confirmTitle">
+    <div class="dialog-head">
+      <h2 id="confirmTitle">Confirm action</h2>
+      <button type="button" data-confirm-cancel aria-label="Close dialog">×</button>
+    </div>
+    <div class="dialog-body">
+      <p id="confirmMessage"></p>
+      <div class="dialog-actions">
+        <button type="button" data-confirm-cancel>Cancel</button>
+        <button type="button" class="primary" data-confirm-accept>Continue</button>
+      </div>
+    </div>
+  </dialog>
+  <dialog id="imageTool" aria-labelledby="imageToolTitle">
+    <div class="dialog-head image-tool-head">
+      <div>
+        <h2 id="imageToolTitle">Image Tool</h2>
+        <span id="imageToolMeta"></span>
+      </div>
+      <button type="button" id="closeImageTool" aria-label="Close Image Tool">×</button>
+    </div>
+    <div class="image-tool-controls">
+      <button type="button" id="imageZoomOut" title="Zoom out" aria-label="Zoom out">−</button>
+      <button type="button" id="imageZoomIn" title="Zoom in" aria-label="Zoom in">+</button>
+      <button type="button" id="imageFit">Fit</button>
+      <button type="button" id="imageActual">100%</button>
+      <button type="button" id="imageDownload">Download PNG</button>
+      <span class="image-tool-hint">Move over the image to inspect pixel values</span>
+    </div>
+    <div id="imageToolStage" tabindex="0" aria-label="Interactive image view"></div>
+    <div id="imagePixelInfo" role="status" aria-live="polite">Pixel info: move over the image</div>
+  </dialog>
+  <div id="notice" role="status" aria-live="polite" hidden>
+    <span id="noticeMessage"></span>
+    <button type="button" id="dismissNotice" aria-label="Dismiss notification">×</button>
+  </div>
   <footer id="credit">Made by <a href="https://belal-amr.vercel.app" target="_blank" rel="noopener author">Belal Amr
       Mohamed</a></footer>
   <noscript>

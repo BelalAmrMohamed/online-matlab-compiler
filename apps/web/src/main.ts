@@ -1,3 +1,11 @@
+import { indentWithTab } from '@codemirror/commands';
+import { HighlightStyle, StreamLanguage, syntaxHighlighting } from '@codemirror/language';
+import { octave } from '@codemirror/legacy-modes/mode/octave';
+import { EditorState, Prec } from '@codemirror/state';
+import { keymap } from '@codemirror/view';
+import { tags } from '@lezer/highlight';
+import { basicSetup, EditorView } from 'codemirror';
+
 declare const __WORKER_SRC__: string;
 declare const __ASSETS__: Record<string, { width: number; height: number; channels: 1 | 3; b64: string; bitDepth: number; format: string; fileSize: number; colorType: string; filename: string; fileModDate: string; colormap?: number[][] }>;
 interface Lesson { id: string; title: string; group: string; files: string[]; cells: { type: 'code' | 'md'; src: string }[] }
@@ -25,24 +33,104 @@ const store = {
   get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } },
   set: (k: string, v: string) => { try { localStorage.setItem(k, v); return true; } catch { return false; } }
 };
-let language: 'en' | 'ar' = store.get('mlweb.lang') === 'ar' ? 'ar' : 'en';
-const tr = (en: string, ar: string) => language === 'ar' ? ar : en;
+const tr = (en: string, _ar: string) => en;
 let refreshToolbar = () => {};
 let themePreference = store.get('mlweb.theme') ?? 'system';
 let noticeTimer = 0;
+let confirmResolve: ((accepted: boolean) => void) | null = null;
+const imageToolState: { canvas: HTMLCanvasElement | null; image: Extract<Out, { k: 'img' }> | null; zoom: number } = { canvas: null, image: null, zoom: 1 };
+const editorViews = new Map<number, EditorView>();
+const editorStates = new Map<number, EditorState>();
+const editorScroll = new Map<number, { top: number; left: number }>();
+const matlabKeywords = new Set(['break', 'case', 'catch', 'continue', 'else', 'elseif', 'end', 'for', 'function', 'global', 'if', 'otherwise', 'persistent', 'return', 'switch', 'try', 'while']);
+const matlabBuiltins = new Set([
+  'arrayfun', 'cellfun', 'cell', 'struct', 'fieldnames', 'isfield', 'isstruct', 'iscell', 'num2cell',
+  'imread', 'imwrite', 'imshow', 'imtool', 'imfinfo', 'imcrop', 'imresize', 'imrotate', 'imhist', 'histeq',
+  'rgb2gray', 'rgb2hsv', 'rgb2ycbcr', 'im2double', 'im2uint8', 'ind2rgb', 'gray2ind',
+  'uint8', 'uint16', 'uint32', 'uint64', 'int8', 'int16', 'int32', 'int64', 'single', 'double', 'logical',
+  'abs', 'acos', 'asin', 'atan', 'ceil', 'cos', 'exp', 'floor', 'log', 'log10', 'max', 'mean', 'median',
+  'min', 'mod', 'numel', 'prod', 'reshape', 'round', 'size', 'sort', 'sqrt', 'std', 'sum', 'tan',
+  'any', 'all', 'find', 'length', 'linspace', 'zeros', 'ones', 'eye', 'repmat', 'flip', 'fliplr', 'flipud',
+  'disp', 'fprintf', 'sprintf', 'error', 'warning', 'clear', 'clc', 'figure', 'plot', 'title', 'xlabel', 'ylabel'
+]);
+const matlabTypes = new Set(['cell', 'double', 'int8', 'int16', 'int32', 'int64', 'logical', 'single', 'struct', 'uint8', 'uint16', 'uint32', 'uint64']);
+const matlabConstants = new Set(['false', 'true', 'eps', 'i', 'j', 'pi']);
+const matlabMode = {
+  ...octave,
+  tokenTable: {
+    keyword: tags.keyword,
+    builtin: tags.standard(tags.variableName),
+    variable: tags.variableName,
+    type: tags.typeName,
+    constant: tags.atom,
+    string: tags.string,
+    number: tags.number,
+    comment: tags.comment,
+    operator: tags.operator,
+    error: tags.invalid
+  },
+  token(stream: Parameters<typeof octave.token>[0], state: Parameters<typeof octave.token>[1]) {
+    const style = octave.token(stream, state);
+    const word = stream.current();
+    if (style === 'builtin' && matlabKeywords.has(word)) return 'keyword';
+    if (style === 'variable') {
+      if (matlabTypes.has(word)) return 'type';
+      if (matlabBuiltins.has(word)) return 'builtin';
+      if (matlabConstants.has(word)) return 'constant';
+    }
+    return style;
+  }
+};
+const matlabLanguage = StreamLanguage.define(matlabMode);
+const matlabHighlight = HighlightStyle.define([
+  { tag: tags.keyword, color: 'var(--syntax-keyword)', fontWeight: '650' },
+  { tag: tags.standard(tags.variableName), color: 'var(--syntax-builtin)', fontWeight: '600' },
+  { tag: tags.typeName, color: 'var(--syntax-type)', fontWeight: '600' },
+  { tag: tags.variableName, color: 'var(--syntax-variable)' },
+  { tag: tags.string, color: 'var(--syntax-string)' },
+  { tag: tags.number, color: 'var(--syntax-number)' },
+  { tag: tags.atom, color: 'var(--syntax-constant)', fontWeight: '600' },
+  { tag: tags.comment, color: 'var(--syntax-comment)', fontStyle: 'italic' },
+  { tag: tags.operator, color: 'var(--syntax-operator)' },
+  { tag: tags.invalid, color: 'var(--syntax-error)', textDecoration: 'underline wavy' }
+]);
+const editorTheme = EditorView.theme({
+  '&': { color: 'var(--ink)', backgroundColor: 'var(--code)', fontSize: '14px' },
+  '.cm-content': { fontFamily: 'ui-monospace, "Cascadia Code", Menlo, Consolas, monospace', padding: '12px 0', caretColor: 'var(--accent)' },
+  '.cm-line': { padding: '0 14px' },
+  '.cm-gutters': { color: 'var(--mute)', backgroundColor: 'var(--code)', border: 'none', borderRight: '1px solid var(--line)' },
+  '.cm-activeLine': { backgroundColor: 'color-mix(in srgb, var(--accent) 7%, transparent)' },
+  '.cm-activeLineGutter': { color: 'var(--ink)', backgroundColor: 'color-mix(in srgb, var(--accent) 7%, transparent)' },
+  '.cm-cursor': { borderLeftColor: 'var(--accent)' },
+  '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'color-mix(in srgb, var(--ring) 34%, transparent) !important' },
+  '.cm-matchingBracket': { color: 'var(--ink)', backgroundColor: 'color-mix(in srgb, var(--run) 20%, transparent)', outline: '1px solid var(--run)' },
+  '.cm-nonmatchingBracket': { color: 'var(--syntax-error)' }
+});
 function notify(message: string) {
   const el = document.getElementById('notice');
-  if (!el) return;
-  el.textContent = message;
+  const text = document.getElementById('noticeMessage');
+  if (!el || !text) return;
+  text.textContent = message;
   el.hidden = false;
   window.clearTimeout(noticeTimer);
   noticeTimer = window.setTimeout(() => { el.hidden = true; }, 5000);
 }
-function applyLanguage() {
-  document.documentElement.lang = language;
-  document.documentElement.dir = language === 'ar' ? 'rtl' : 'ltr';
-  const tagline = document.querySelector('.brand span');
-  if (tagline) tagline.textContent = tr('open MATLAB-style notebook', 'دفتر MATLAB تفاعلي');
+function confirmInApp(title: string, message: string, acceptLabel = 'Continue'): Promise<boolean> {
+  const dialog = document.getElementById('confirmDialog') as HTMLDialogElement;
+  document.getElementById('confirmTitle')!.textContent = title;
+  document.getElementById('confirmMessage')!.textContent = message;
+  dialog.querySelector<HTMLButtonElement>('[data-confirm-accept]')!.textContent = acceptLabel;
+  return new Promise(resolve => {
+    confirmResolve = resolve;
+    dialog.showModal();
+  });
+}
+function settleConfirm(accepted: boolean) {
+  const dialog = document.getElementById('confirmDialog') as HTMLDialogElement | null;
+  if (dialog?.open) dialog.close();
+  const resolve = confirmResolve;
+  confirmResolve = null;
+  resolve?.(accepted);
 }
 function applyTheme() {
   if (themePreference === 'dark' || themePreference === 'light') document.documentElement.dataset.theme = themePreference;
@@ -90,7 +178,9 @@ function onWorkerMsg(e: MessageEvent) {
       if (curRun.fig === 0) curRun.fig = 1;
       const fig = m.tool ? -curRun.fig : curRun.fig;
       if (!m.tool) c.outs = c.outs.filter(o => !(o.k === 'img' && o.fig === fig));   // imshow into the same figure replaces the previous image
-      c.outs.push({ k: 'img', fig, w: m.w, h: m.h, rgb: m.rgb, tool: m.tool }); scheduleRender();
+      const image: Extract<Out, { k: 'img' }> = { k: 'img', fig, w: m.w, h: m.h, rgb: m.rgb, tool: m.tool };
+      c.outs.push(image); scheduleRender();
+      if (m.tool) openImageTool(image);
     } break;
     case 'wrote': files.set(m.name, m.img); renderSide(); break;
     case 'vars': vars = m.vars; renderSide(); break;
@@ -134,10 +224,9 @@ function loadAsset(name: string) {
   const bin = atob(s.b64), d = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) d[i] = bin.charCodeAt(i);
   const { b64, ...rest } = s; void b64; files.set(name, { ...rest, data: d });
 }
-function openLesson(id: string, ask = true) {
+async function openLesson(id: string, ask = true) {
   const L = __LESSONS__.find(l => l.id === id); if (!L || curRun) return;
-  if (ask && !confirm(tr(`Open "${L.title}"?\nThe current notebook will be replaced. Export it first if you want to keep a copy.`, `فتح "${L.title}"؟\nسيتم استبدال دفتر العمل الحالي. صدّره أولاً للاحتفاظ بنسخة.`))) return;
-  dismissWelcome();
+  if (ask && !await confirmInApp('Open lesson?', `Open "${L.title}"? The current notebook will be replaced. Export it first if you want to keep a copy.`, 'Open lesson')) return;
   L.files.forEach(loadAsset); cells = L.cells.map(c => mkCell(c.type, c.src)); sel = 0; curLesson = id;
   store.set('mlweb.lesson', id); save(); startWorker(); vars = []; render(); renderSide(); window.scrollTo(0, 0);
   history_.replaceState(null, '', '#' + id); const s = document.getElementById('lessons') as HTMLSelectElement | null; if (s) s.value = id;
@@ -164,7 +253,6 @@ function load(): Cell[] | null {
 }
 function defaultNotebook(): Cell[] {
   return [
-    mkCell('md', '# Welcome to MLWeb\nAn open, in-browser MATLAB-style notebook for image processing. Press **Shift+Enter** to run a cell.\n\nThe *Current Folder* panel already holds `test.png` (RGB) and `testgray.png` (grayscale) from Section 1.'),
     mkCell('code', "a = imread('test.png');\nsize(a)"),
     mkCell('code', "imshow(a), figure, imshow(rgb2gray(a));"),
     mkCell('code', "imfinfo('test.png')"),
@@ -192,7 +280,7 @@ function renderHelp() {
   items.replaceChildren();
   for (const [title, description, arabic] of helpReference) {
     if (query && !(title + ' ' + description + ' ' + arabic).toLowerCase().includes(query)) continue;
-    items.append($('article', { class: 'help-item' }, $('b', {}, title), $('p', {}, language === 'ar' ? arabic : description)));
+    items.append($('article', { class: 'help-item' }, $('b', {}, title), $('p', {}, description)));
   }
 }
 function openHelp() {
@@ -208,26 +296,6 @@ function openHelp() {
   if (!dialog.open) dialog.showModal();
   search.focus();
 }
-function dismissWelcome() {
-  store.set('mlweb.welcome', '1');
-  document.getElementById('welcome')?.replaceChildren();
-}
-function renderWelcome() {
-  const root = document.getElementById('welcome');
-  if (!root || store.get('mlweb.welcome') === '1') return;
-  const ar = language === 'ar';
-  root.replaceChildren($('div', { class: 'welcome-card' },
-    $('div', {},
-      $('h1', {}, tr('A MATLAB-style image lab, right in your browser.', 'مختبر صور بأسلوب MATLAB، مباشرة في متصفحك.')),
-      $('p', {}, tr('Learn image processing with runnable lessons, editable notebook cells, instant plots, and sample images—no installation or account required.', 'تعلّم معالجة الصور عبر دروس تفاعلية وخلايا قابلة للتحرير ونتائج فورية وصور تجريبية، دون تثبيت أو حساب.')),
-      $('span', { class: 'welcome-note' }, tr('Runs locally in your browser. MLWeb supports an educational MATLAB subset, not every MATLAB feature.', 'يعمل محلياً في متصفحك. يدعم MLWeb مجموعة تعليمية من MATLAB، وليس جميع ميزاته.'))),
-    $('div', { class: 'welcome-actions' },
-      $('button', { class: 'primary', onclick: dismissWelcome }, tr('Start notebook', 'ابدأ دفتر العمل')),
-      $('button', { onclick: () => { dismissWelcome(); openLesson('section-1', false); } }, tr('Try the first lesson', 'جرّب الدرس الأول')),
-      $('button', { onclick: () => document.getElementById('lessons')?.focus() }, tr('Browse lessons', 'استعرض الدروس')))));
-  root.dir = ar ? 'rtl' : 'ltr';
-}
-
 // ---------------- markdown (tiny) ----------------
 const esc = (s: string) => s.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]!));
 function md(src: string): string {
@@ -285,8 +353,10 @@ function scheduleRender() { if (!renderQ) renderQ = requestAnimationFrame(() => 
 const nb = () => document.getElementById('nb')!;
 function setStatus(s: string) {
   const el = document.getElementById('status');
-  if (el) { el.textContent = s; el.dataset.state = curRun ? 'running' : 'idle'; }
-  document.getElementById('stop')?.toggleAttribute('disabled', !curRun);
+  if (el) { el.textContent = s; el.title = s; el.setAttribute('aria-label', s); el.dataset.state = curRun ? 'running' : 'idle'; }
+  const stop = document.getElementById('stop');
+  stop?.toggleAttribute('disabled', !curRun);
+  if (stop) stop.hidden = !curRun;
 }
 
 function figureEl(o: Extract<Out, { k: 'img' }>): HTMLElement {
@@ -300,18 +370,70 @@ function figureEl(o: Extract<Out, { k: 'img' }>): HTMLElement {
   };
   cv.onmouseleave = () => { px.textContent = ' '; };
   const cap = $('div', { class: 'cap' }, o.tool ? `Image Tool · ${o.w}×${o.h}` : `Figure ${o.fig} · ${o.w}×${o.h}`);
+  if (o.tool) cap.append($('button', { title: 'Reopen interactive Image Tool', onclick: () => openImageTool(o) }, 'Open viewer'));
   const zb = (t: string, f: () => void) => $('button', { title: tr('Zoom image', 'تكبير الصورة'), onclick: () => { f(); apply(); } }, t);
   cap.append(zb('+', () => { zoom *= 1.5; }), zb('−', () => { zoom /= 1.5; }), zb('100%', () => { zoom = 1; }));
   cap.append($('button', { onclick: async () => download(`figure${Math.abs(o.fig)}.png`, await toBlob(cv, 'image/png')) }, 'PNG'));
   return $('div', { class: 'fig' }, cap, $('div', { class: 'scroll' }, cv), px);
+}
+function setImageToolZoom(zoom: number) {
+  const image = imageToolState.image, canvas = imageToolState.canvas;
+  if (!image || !canvas) return;
+  imageToolState.zoom = Math.max(0.05, Math.min(16, zoom));
+  canvas.style.width = `${image.w * imageToolState.zoom}px`;
+  canvas.style.height = `${image.h * imageToolState.zoom}px`;
+  canvas.style.imageRendering = imageToolState.zoom > 1 ? 'pixelated' : 'auto';
+  document.getElementById('imageToolMeta')!.textContent = `${image.w} × ${image.h} px · ${Math.round(imageToolState.zoom * 100)}%`;
+}
+function fitImageTool() {
+  const image = imageToolState.image;
+  const stage = document.getElementById('imageToolStage');
+  if (!image || !stage) return;
+  const padding = 32;
+  const zoom = Math.min(1, (stage.clientWidth - padding) / image.w, (stage.clientHeight - padding) / image.h);
+  setImageToolZoom(Math.max(0.05, zoom));
+  stage.scrollTo(0, 0);
+}
+function openImageTool(image: Extract<Out, { k: 'img' }>) {
+  const dialog = document.getElementById('imageTool') as HTMLDialogElement;
+  const stage = document.getElementById('imageToolStage')!;
+  imageToolState.image = image;
+  imageToolState.canvas = rgbToCanvas(image.w, image.h, image.rgb);
+  const canvas = imageToolState.canvas;
+  canvas.setAttribute('aria-label', `Image ${image.w} by ${image.h} pixels. Move pointer to inspect pixels.`);
+  canvas.onmousemove = event => {
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.min(image.w - 1, Math.max(0, Math.floor((event.clientX - rect.left) / rect.width * image.w)));
+    const y = Math.min(image.h - 1, Math.max(0, Math.floor((event.clientY - rect.top) / rect.height * image.h)));
+    const p = (y * image.w + x) * 3;
+    document.getElementById('imagePixelInfo')!.textContent = `Pixel info · X: ${x + 1}, Y: ${y + 1} · RGB: [${image.rgb[p]}, ${image.rgb[p + 1]}, ${image.rgb[p + 2]}]`;
+  };
+  stage.replaceChildren(canvas);
+  document.getElementById('imageToolTitle')!.textContent = 'Image Tool';
+  document.getElementById('imagePixelInfo')!.textContent = 'Pixel info: move over the image';
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(fitImageTool);
+}
+function runFromEditor(cell: Cell, advance: boolean) {
+  if (curRun) return true;
+  void runCell(cell).then(() => {
+    if (!advance) return;
+    const index = cells.indexOf(cell);
+    if (index < 0) return;
+    if (index === cells.length - 1) cells.push(mkCell('code', ''));
+    sel = index + 1;
+    save();
+    focusCell(cells[sel].id);
+  });
+  return true;
 }
 function cellEl(c: Cell, i: number): HTMLElement {
   const mv = (d: number) => () => { const j = i + d; if (j < 0 || j >= cells.length) return; [cells[i], cells[j]] = [cells[j], cells[i]]; sel = j; save(); render(); };
   const tools = $('div', { class: 'tools' }, $('span', { class: 'idx' }, c.type === 'md' ? 'md' : c.running ? '[*]' : `[${c.count ?? ' '}]`));
   if (c.type === 'code') tools.append($('button', { class: 'primary', disabled: !!curRun, title: tr('Run cell · Shift+Enter', 'تشغيل الخلية · Shift+Enter'), onclick: () => runCell(c) }, tr('▶ Run', '▶ تشغيل')));
   else tools.append($('button', { title: tr('Edit text cell', 'تحرير خلية النص'), onclick: () => { c.mdEdit = !c.mdEdit; render(); } }, c.mdEdit ? tr('Done', 'تم') : tr('Edit', 'تحرير')));
-  const insertAt = (offset: number) => () => {
-    const added = mkCell(c.type, c.type === 'md' ? '## Heading' : '');
+  const insertAt = (type: 'code' | 'md', offset: number) => () => {
+    const added = mkCell(type, type === 'md' ? '## Heading' : '');
     added.mdEdit = added.type === 'md';
     const at = i + offset;
     cells.splice(at, 0, added);
@@ -320,49 +442,117 @@ function cellEl(c: Cell, i: number): HTMLElement {
     render();
     if (added.type === 'code') focusCell(added.id);
   };
-  tools.append($('span', { class: 'sp' }),
-    $('button', { title: tr('Duplicate cell', 'تكرار الخلية'), onclick: () => { const copy = mkCell(c.type, c.src); copy.mdEdit = c.type === 'md'; cells.splice(i + 1, 0, copy); sel = i + 1; save(); render(); if (copy.type === 'code') focusCell(copy.id); } }, '▣'),
-    $('button', { title: tr('Insert cell above', 'إدراج خلية لأعلى'), onclick: insertAt(0) }, '＋↑'),
-    $('button', { title: tr('Insert cell below', 'إدراج خلية لأسفل'), onclick: insertAt(1) }, '＋↓'),
-    c.outs.length ? $('button', { title: tr('Clear output', 'مسح النتائج'), onclick: () => { c.outs = []; c.count = null; render(); } }, '⌫') : document.createTextNode(''),
-    $('button', { title: tr('Move up', 'تحريك لأعلى'), onclick: mv(-1) }, '↑'), $('button', { title: tr('Move down', 'تحريك لأسفل'), onclick: mv(1) }, '↓'),
-    $('button', { title: c.type === 'md' ? tr('Convert to code', 'تحويل إلى كود') : tr('Convert to text', 'تحويل إلى نص'), onclick: () => { c.type = c.type === 'md' ? 'code' : 'md'; c.outs = []; c.mdEdit = c.type === 'md'; save(); render(); } }, c.type === 'md' ? '→ code' : '→ text'),
-    $('button', { title: tr('Delete cell', 'حذف الخلية'), onclick: () => { cells.splice(i, 1); if (!cells.length) cells.push(mkCell('code', '')); sel = Math.min(sel, cells.length - 1); save(); render(); } }, '✕'));
+  const menuItem = (label: string, action: () => void) => $('button', { onclick: (event: MouseEvent) => { action(); (event.currentTarget as HTMLElement).closest('details')?.removeAttribute('open'); } }, label);
+  const duplicate = () => { const copy = mkCell(c.type, c.src); copy.mdEdit = c.type === 'md'; cells.splice(i + 1, 0, copy); sel = i + 1; save(); render(); if (copy.type === 'code') focusCell(copy.id); };
+  const remove = () => { cells.splice(i, 1); if (!cells.length) cells.push(mkCell('code', '')); sel = Math.min(sel, cells.length - 1); save(); render(); };
+  const options = $('details', { class: 'cell-menu' },
+    $('summary', { title: 'Cell options', 'aria-label': 'Cell options' }, '⋯'),
+    $('div', { class: 'cell-menu-items' },
+      menuItem('Insert code cell above', insertAt('code', 0)),
+      menuItem('Insert text cell above', insertAt('md', 0)),
+      menuItem('Duplicate cell', duplicate),
+      menuItem('Move cell up', mv(-1)),
+      menuItem('Move cell down', mv(1)),
+      ...(c.outs.length ? [menuItem('Clear cell output', () => { c.outs = []; c.count = null; render(); })] : []),
+      menuItem(c.type === 'md' ? 'Convert to code' : 'Convert to text', () => { c.type = c.type === 'md' ? 'code' : 'md'; c.outs = []; c.mdEdit = c.type === 'md'; save(); render(); }),
+      menuItem('Delete cell', remove)));
+  tools.append($('span', { class: 'sp' }), options);
   const el = $('section', { class: 'cell' + (i === sel ? ' sel' : '') + (c.running ? ' running' : ''), 'aria-label': tr(`${c.type === 'md' ? 'Text' : 'Code'} cell ${i + 1}`, `خلية ${c.type === 'md' ? 'نص' : 'كود'} ${i + 1}`) }, tools);
   el.addEventListener('focusin', () => { if (sel !== i) { sel = i; document.querySelectorAll('.cell').forEach((n, k) => n.classList.toggle('sel', k === i)); } });
   if (c.type === 'md' && !c.mdEdit) { const v = $('div', { class: 'md' }); v.innerHTML = md(c.src); v.ondblclick = () => { c.mdEdit = true; render(); }; el.append(v); }
-  else {
+  else if (c.type === 'md') {
     const ta = $('textarea', { class: 'src', spellcheck: false, rows: 1, 'data-cell': c.id });
     ta.value = c.src; const fit = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 2 + 'px'; }; requestAnimationFrame(fit);
     ta.oninput = () => { c.src = ta.value; fit(); save(); };
     ta.onkeydown = ev => {
-      if (ev.key === 'Enter' && (ev.shiftKey || ev.ctrlKey)) {
+      if (ev.key === 'Enter' && (ev.shiftKey || ev.ctrlKey || ev.metaKey)) {
         ev.preventDefault();
-        if (c.type === 'md') { c.mdEdit = false; render(); return; }
-        runCell(c).then(() => { if (ev.shiftKey) { if (i === cells.length - 1) { cells.push(mkCell('code', '')); save(); } sel = i + 1; focusCell(cells[sel].id); } });
-      } else if (ev.key === 'Tab') { ev.preventDefault(); const s = ta.selectionStart; ta.setRangeText('    ', s, ta.selectionEnd, 'end'); ta.oninput!(null as any); }
+        c.mdEdit = false; render();
+      } else if (ev.key === 'Tab') { ev.preventDefault(); const s = ta.selectionStart; ta.setRangeText('    ', s, ta.selectionEnd, 'end'); c.src = ta.value; fit(); save(); }
     };
     el.append(ta);
+  } else {
+    const host = $('div', { class: 'code-editor', 'data-cell': c.id });
+    el.append(host);
+    const state = editorStates.get(c.id) ?? EditorState.create({
+      doc: c.src,
+      extensions: [
+        basicSetup,
+        matlabLanguage,
+        syntaxHighlighting(matlabHighlight),
+        editorTheme,
+        EditorView.lineWrapping,
+        EditorState.tabSize.of(4),
+        Prec.highest(keymap.of([
+          { key: 'Shift-Enter', run: () => runFromEditor(c, true) },
+          { key: 'Mod-Enter', run: () => runFromEditor(c, false) },
+          indentWithTab
+        ])),
+        EditorView.updateListener.of(update => {
+          if (update.docChanged) {
+            c.src = update.state.doc.toString();
+            editorStates.set(c.id, update.state);
+            save();
+          }
+        })
+      ]
+    });
+    const view = new EditorView({ state, parent: host });
+    editorViews.set(c.id, view);
+    editorStates.set(c.id, view.state);
+    requestAnimationFrame(() => view.requestMeasure());
   }
   const outs = $('div', { class: 'outs' });
   for (const o of c.outs) {
     if (o.k === 'img') outs.append(figureEl(o)); else outs.append($('pre', { class: 'o' + (o.k === 'text' ? '' : ' ' + o.k) }, o.s.replace(/\n+$/, '\n')));
   }
-  el.append(outs); return el;
+  const insert = $('div', { class: 'cell-insert', role: 'group', 'aria-label': 'Insert a cell below' },
+    $('button', { onclick: insertAt('code', 1) }, '+ Code'),
+    $('button', { onclick: insertAt('md', 1) }, '+ Text'));
+  el.append(outs, insert); return el;
 }
 let focusId: number | null = null;
 function focusCell(id: number) { focusId = id; render(); }
 function render() {
   const root = nb(), y = window.scrollY, active = document.activeElement as HTMLTextAreaElement | null;
   let keep: { id: string; s: number; e: number } | null = active && active.dataset?.cell ? { id: active.dataset.cell, s: active.selectionStart, e: active.selectionEnd } : null;
+  let keepEditorId: number | null = null;
+  for (const [id, view] of editorViews) {
+    if (view.hasFocus) keepEditorId = id;
+    editorStates.set(id, view.state);
+    editorScroll.set(id, { top: view.scrollDOM.scrollTop, left: view.scrollDOM.scrollLeft });
+    view.destroy();
+  }
+  editorViews.clear();
+  const codeIds = new Set(cells.filter(cell => cell.type === 'code').map(cell => cell.id));
+  for (const id of editorStates.keys()) {
+    if (!codeIds.has(id)) { editorStates.delete(id); editorScroll.delete(id); }
+  }
   root.replaceChildren();
   const ln = lessonNav(); if (ln) root.append(ln);
   cells.forEach((c, i) => root.append(cellEl(c, i)));
-  root.append($('div', { class: 'addbar' }, $('button', { title: tr('Add a code cell', 'إضافة خلية كود'), onclick: () => { cells.push(mkCell('code', '')); sel = cells.length - 1; save(); focusCell(cells[sel].id); } }, tr('+ Code', '+ كود')),
-    $('button', { title: tr('Add a text cell', 'إضافة خلية نص'), onclick: () => { const c = mkCell('md', '## Heading'); c.mdEdit = true; cells.push(c); sel = cells.length - 1; save(); focusCell(c.id); } }, tr('+ Text', '+ نص'))));
-  if (focusId !== null) { const t = document.querySelector<HTMLTextAreaElement>(`textarea[data-cell="${focusId}"]`); focusId = null; if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); t.scrollIntoView({ block: 'nearest' }); keep = null; } }
+  if (focusId !== null) {
+    const view = editorViews.get(focusId);
+    if (view) {
+      const end = view.state.doc.length;
+      view.dispatch({ selection: { anchor: end } });
+      view.focus();
+      view.scrollDOM.scrollTop = view.scrollDOM.scrollHeight;
+    } else {
+      const t = document.querySelector<HTMLTextAreaElement>(`textarea[data-cell="${focusId}"]`);
+      if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); t.scrollIntoView({ block: 'nearest' }); }
+    }
+    focusId = null; keep = null; keepEditorId = null;
+  }
   if (keep) { const t = document.querySelector<HTMLTextAreaElement>(`textarea[data-cell="${keep.id}"]`); if (t) { t.focus({ preventScroll: true }); t.setSelectionRange(keep.s, keep.e); } }
-  window.scrollTo(0, y); document.getElementById('stop')?.toggleAttribute('disabled', !curRun);
+  else if (keepEditorId !== null) {
+    const view = editorViews.get(keepEditorId), scroll = editorScroll.get(keepEditorId);
+    if (view) { view.focus(); if (scroll) view.scrollDOM.scrollTo(scroll.left, scroll.top); }
+  }
+  window.scrollTo(0, y);
+  const stop = document.getElementById('stop');
+  stop?.toggleAttribute('disabled', !curRun);
+  if (stop) stop.hidden = !curRun;
 }
 function fmtBytes(n: number) { return n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB'; }
 function renderSide() {
@@ -438,7 +628,6 @@ async function importFile(f: File) {
     cells = (parts.length ? parts : ['']).map(p => mkCell('code', p));
   }
   curLesson = null;
-  dismissWelcome();
   store.set('mlweb.lesson', '');
   sel = 0; save(); render(); renderSide();
   notify(tr(`Imported ${f.name}.`, `تم استيراد ${f.name}.`));
@@ -446,7 +635,6 @@ async function importFile(f: File) {
 
 // ---------------- boot ----------------
 function boot() {
-  applyLanguage();
   applyTheme();
   ['test.png', 'testgray.png'].forEach(loadAsset);
   try { cmdHist = JSON.parse(store.get('mlweb.hist') ?? '[]'); } catch { cmdHist = []; }
@@ -454,43 +642,69 @@ function boot() {
   curLesson = store.get('mlweb.lesson') || null;
   if (curLesson) __LESSONS__.find(l => l.id === curLesson)?.files.forEach(loadAsset);
   cells = saved ?? defaultNotebook();
+  if (cells[0]?.type === 'md' && cells[0].src.startsWith('# Welcome to MLWeb\n')) cells.shift();
+  if (!cells.length) cells = [mkCell('code', '')];
   save();
   const act = document.getElementById('actions')!;
-  const imp = $('input', { type: 'file', accept: '.m,.ipynb', style: 'display:none' }); imp.onchange = () => { if (imp.files?.[0]) importFile(imp.files[0]).catch(error => notify(tr(`Import failed: ${error instanceof Error ? error.message : String(error)}`, `فشل الاستيراد: ${error instanceof Error ? error.message : String(error)}`))); imp.value = ''; };
+  const imp = $('input', { type: 'file', accept: '.m,.ipynb', style: 'display:none' }); imp.onchange = () => { if (imp.files?.[0]) importFile(imp.files[0]).catch(error => notify(`Import failed: ${error instanceof Error ? error.message : String(error)}`)); imp.value = ''; };
   const sl = $('select', { id: 'lessons', title: 'Ready-made lessons' }, $('option', { value: '' }, 'Lessons…'));
   for (const g of ['Sections', 'Lectures']) { const og = $('optgroup', { label: g }); for (const l of __LESSONS__.filter(x => x.group === g)) og.append($('option', { value: l.id }, l.title)); sl.append(og); }
   sl.value = curLesson ?? ''; sl.onchange = () => { if (sl.value) openLesson(sl.value); else sl.value = curLesson ?? ''; };
   const renderToolbar = () => {
-    sl.setAttribute('aria-label', tr('Choose a lesson', 'اختر درساً'));
-    sl.title = tr('Ready-made lessons', 'دروس جاهزة');
-    sl.options[0].textContent = tr('Lessons…', 'الدروس…');
-    sl.querySelectorAll('optgroup').forEach(group => { group.label = group.label === 'Sections' ? tr('Sections', 'الوحدات') : tr('Lectures', 'المحاضرات'); });
+    sl.setAttribute('aria-label', 'Choose a lesson');
+    sl.title = 'Choose a lesson';
+    sl.options[0].textContent = 'Lessons…';
     const isDark = document.documentElement.dataset.theme === 'dark' || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
+    const menuButton = (label: string, action: () => void) => $('button', { role: 'menuitem', onclick: (event: MouseEvent) => { action(); (event.currentTarget as HTMLElement).closest('details')?.removeAttribute('open'); } }, label);
+    const menu = $('details', { class: 'toolbar-menu' },
+      $('summary', { title: 'Notebook menu', 'aria-label': 'Notebook menu' }, 'More'),
+      $('div', { class: 'toolbar-menu-items', role: 'menu' },
+        menuButton('New notebook', async () => {
+          if (curRun) { notify('Stop execution before creating a new notebook.'); return; }
+          if (!await confirmInApp('Create a new notebook?', 'The current notebook will be replaced. Export it first if you want to keep a copy.', 'Create notebook')) return;
+          cells = defaultNotebook(); sel = 0; curLesson = null; store.set('mlweb.lesson', ''); history_.replaceState(null, '', location.pathname); save(); render(); renderSide(); sl.value = '';
+        }),
+        menuButton('Import…', () => imp.click()),
+        menuButton('Export as .ipynb', exportIpynb),
+        menuButton('Export as .m', exportM),
+        menuButton('Help and shortcuts', openHelp),
+        menuButton(isDark ? 'Switch to light theme' : 'Switch to dark theme', () => { themePreference = isDark ? 'light' : 'dark'; store.set('mlweb.theme', themePreference); applyTheme(); refreshToolbar(); })));
     act.replaceChildren(sl,
-      $('button', { class: 'primary', id: 'runall', title: tr('Run all code cells', 'تشغيل جميع خلايا الكود'), onclick: () => runAll() }, tr('▶ Run all', '▶ تشغيل الكل')),
-      $('button', { id: 'stop', title: tr('Stop execution and reset the workspace', 'إيقاف التنفيذ وإعادة ضبط مساحة العمل'), disabled: !curRun, onclick: stopRun }, tr('■ Stop', '■ إيقاف')),
-      $('span', { id: 'status', role: 'status', 'aria-live': 'polite' }, curRun ? tr('Running…', 'قيد التشغيل…') : tr('Ready', 'جاهز')),
-      $('span', { id: 'saveState', title: tr('Notebook cells are saved in this browser', 'تُحفظ خلايا الدفتر في هذا المتصفح') }, tr('Saved locally', 'تم الحفظ محلياً')),
-      $('button', { title: tr('Add a code cell', 'إضافة خلية كود'), onclick: () => { cells.push(mkCell('code', '')); sel = cells.length - 1; save(); focusCell(cells[sel].id); } }, tr('+ Cell', '+ خلية')),
-      $('button', { title: tr('Import a MATLAB script or notebook', 'استيراد سكربت MATLAB أو دفتر'), onclick: () => imp.click() }, tr('Import', 'استيراد')), imp,
-      $('button', { title: tr('Export as Jupyter notebook', 'تصدير كدفتر Jupyter'), onclick: exportIpynb }, '.ipynb'),
-      $('button', { title: tr('Export as MATLAB script', 'تصدير كسكربت MATLAB'), onclick: exportM }, '.m'),
-      $('button', { title: tr('Search help and keyboard shortcuts', 'البحث في المساعدة واختصارات لوحة المفاتيح'), onclick: openHelp }, tr('Help', 'مساعدة')),
-      $('button', { title: tr('Toggle color theme', 'تغيير المظهر'), onclick: () => { themePreference = isDark ? 'light' : 'dark'; store.set('mlweb.theme', themePreference); applyTheme(); refreshToolbar(); } }, isDark ? tr('☀ Light', '☀ فاتح') : tr('☾ Dark', '☾ داكن')),
-      $('button', { title: tr('Switch interface language', 'تغيير لغة الواجهة'), onclick: () => { language = language === 'en' ? 'ar' : 'en'; store.set('mlweb.lang', language); applyLanguage(); refreshToolbar(); render(); renderSide(); renderWelcome(); } }, language === 'en' ? 'العربية' : 'English'),
-      $('button', { title: tr('Start a new notebook', 'بدء دفتر جديد'), onclick: () => { if (confirm(tr('Replace this notebook with a fresh starter notebook?', 'استبدال دفتر العمل بدفتر جديد؟'))) { cells = defaultNotebook(); sel = 0; curLesson = null; store.set('mlweb.lesson', ''); history_.replaceState(null, '', location.pathname); save(); render(); renderSide(); sl.value = ''; } } }, tr('New', 'جديد')));
+      $('button', { class: 'primary', id: 'runall', title: 'Run all code cells', onclick: () => runAll() }, '▶ Run all'),
+      $('button', { id: 'stop', title: 'Stop execution and reset the workspace', hidden: !curRun, onclick: stopRun }, '■ Stop'),
+      $('span', { id: 'status', role: 'status', 'aria-label': curRun ? 'Running' : 'Ready', 'aria-live': 'polite', title: curRun ? 'Running' : 'Ready' }, ''),
+      menu, imp);
   };
   refreshToolbar = renderToolbar;
   refreshToolbar();
   document.getElementById('helpSearch')?.addEventListener('input', renderHelp);
   document.getElementById('closeHelp')?.addEventListener('click', () => (document.getElementById('helpDialog') as HTMLDialogElement).close());
   document.getElementById('helpDialog')?.addEventListener('click', event => { if (event.target === event.currentTarget) (event.currentTarget as HTMLDialogElement).close(); });
+  document.querySelectorAll('[data-confirm-cancel]').forEach(button => button.addEventListener('click', () => settleConfirm(false)));
+  document.querySelector('[data-confirm-accept]')?.addEventListener('click', () => settleConfirm(true));
+  document.getElementById('confirmDialog')?.addEventListener('cancel', event => { event.preventDefault(); settleConfirm(false); });
+  document.getElementById('confirmDialog')?.addEventListener('click', event => { if (event.target === event.currentTarget) settleConfirm(false); });
+  document.getElementById('dismissNotice')?.addEventListener('click', () => { window.clearTimeout(noticeTimer); document.getElementById('notice')!.hidden = true; });
+  const imageDialog = document.getElementById('imageTool') as HTMLDialogElement;
+  document.getElementById('closeImageTool')?.addEventListener('click', () => imageDialog.close());
+  document.getElementById('imageZoomIn')?.addEventListener('click', () => setImageToolZoom(imageToolState.zoom * 1.25));
+  document.getElementById('imageZoomOut')?.addEventListener('click', () => setImageToolZoom(imageToolState.zoom / 1.25));
+  document.getElementById('imageFit')?.addEventListener('click', fitImageTool);
+  document.getElementById('imageActual')?.addEventListener('click', () => setImageToolZoom(1));
+  document.getElementById('imageDownload')?.addEventListener('click', async () => {
+    if (imageToolState.canvas) download('imtool.png', await toBlob(imageToolState.canvas, 'image/png'));
+  });
+  document.getElementById('imageToolStage')?.addEventListener('wheel', event => {
+    if (!imageToolState.image) return;
+    event.preventDefault();
+    setImageToolZoom(imageToolState.zoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1));
+  }, { passive: false });
+  imageDialog.addEventListener('click', event => { if (event.target === imageDialog) imageDialog.close(); });
   window.addEventListener('keydown', event => {
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'p') { event.preventDefault(); openHelp(); }
     else if (event.key === '?' && !['INPUT', 'TEXTAREA'].includes((event.target as HTMLElement)?.tagName ?? '')) { event.preventDefault(); openHelp(); }
   });
   startWorker(); render(); renderSide();
-  renderWelcome();
   if (hashId && __LESSONS__.some(l => l.id === hashId) && hashId !== curLesson) openLesson(hashId, false);
   else if (curLesson) document.title = (__LESSONS__.find(l => l.id === curLesson)?.title ?? 'MLWeb') + ' – MLWeb | Belal Amr Mohamed';
   window.addEventListener('hashchange', () => { const h = decodeURIComponent(location.hash.slice(1)); if (h && h !== curLesson && __LESSONS__.some(l => l.id === h)) openLesson(h); });

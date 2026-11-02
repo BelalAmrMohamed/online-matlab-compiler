@@ -4,7 +4,7 @@ Everything runs in the browser (interpreter in a Web Worker). No server needed; 
 
     cd packages/interp && npm install && npm test        # headless interpreter tests
     cd packages/interp && npx tsx test/lessons.ts        # runs every code cell of the 10 lessons headless
-    cd apps/web && npm install && npm run build          # -> apps/web/dist/index.html (single file, ~960 KB)
+    cd apps/web && npm install && npm run build          # -> apps/web/dist/index.html (single file, ~1.3 MB)
 
 Deploy on Vercel: import the repo; `vercel.json` already sets install/build/output.
 
@@ -12,7 +12,8 @@ Deploy on Vercel: import the repo; `vercel.json` already sets install/build/outp
 - `packages/interp` – lexer/parser, N-d arrays with uint8 saturation, indexing, printing, builtins, image toolbox (DOM-free).
 - `apps/web` – notebook UI: cells (code/text), Run / Run all / Stop (60 s limit), Workspace, Current Folder (upload/download),
   Command History, figures with pixel inspector and zoom, `.m` and `.ipynb` import/export, autosave in localStorage,
-  responsive light/dark themes, Arabic/English interface, keyboard-accessible tooltips, searchable help, and first-run onboarding.
+  MATLAB/Octave syntax-highlighted CodeMirror editors with line numbers, bracket matching, and indentation, responsive
+  light/dark themes, keyboard-accessible tooltips, and searchable help.
 
 ## MATLAB compatibility
 The interpreter is an educational MATLAB-style subset, not a full MATLAB runtime. It supports `switch` / `case` /
