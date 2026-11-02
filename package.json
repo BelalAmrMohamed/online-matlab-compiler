@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "npm run build --prefix apps/web && python -m http.server 4173 --bind 127.0.0.1 --directory apps/web/dist",
     "map": "node scripts/map.js",
     "commit": "node scripts/commit.js",
     "release": "node scripts/release.js",
