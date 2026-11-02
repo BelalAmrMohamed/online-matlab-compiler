@@ -16,3 +16,5 @@ pnpm-debug.log*
 *.zip
 .DS_Store
 Thumbs.db
+
+online-matlab-compiler.zip
