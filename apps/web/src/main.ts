@@ -293,7 +293,7 @@ function exportIpynb() {
 }
 function exportM() {
   const s = cells.map(c => c.type === 'md' ? c.src.split('\n').map(l => '% ' + l).join('\n') : c.src).join('\n\n%%\n');
-  download('notebook.m', new Blob([('% Exported from MLWeb - Belal Amr Mohamed (belal-amr.vercel.app)\n\n' + s).replace(/\n/g, '\r\n')], { type: 'text/plain' }));
+  download('notebook.m', new Blob([('% Exported from MLWeb - Belal Amr Mohamed\n\n' + s).replace(/\n/g, '\r\n')], { type: 'text/plain' }));
 }
 async function importFile(f: File) {
   const text = await f.text();
