@@ -5,9 +5,9 @@ import path from 'node:path';
 import { loadLessons } from './lessons.mjs';
 const here = import.meta.dirname, dist = path.join(here, 'dist');
 
-// Public URL: SITE_URL env, else Vercel's production URL, else the placeholder below (edit it or set SITE_URL in Vercel).
+// Public URL: SITE_URL env, else Vercel's production URL, else the production domain.
 const vercel = process.env.VERCEL_PROJECT_PRODUCTION_URL;
-const SITE = (process.env.SITE_URL || (vercel ? 'https://' + vercel : 'https://mlweb.vercel.app')).replace(/\/$/, '');
+const SITE = (process.env.SITE_URL || (vercel ? 'https://' + vercel : 'https://online-matlab-compiler.vercel.app')).replace(/\/$/, '');
 
 const w = await build({ entryPoints: [path.join(here, 'src/worker.ts')], bundle: true, write: false, format: 'iife', target: 'es2022', minify: true });
 const assets = JSON.parse(readFileSync(path.join(here, 'assets/assets.json'), 'utf8'));
@@ -32,5 +32,8 @@ writeFileSync(path.join(dist, 'robots.txt'), `User-agent: *\nAllow: /\n\nSitemap
 const day = new Date().toISOString().slice(0, 10);
 writeFileSync(path.join(dist, 'sitemap.xml'), `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>${SITE}/</loc><lastmod>${day}</lastmod><priority>1.0</priority></url>\n</urlset>\n`);
 writeFileSync(path.join(dist, 'site.webmanifest'), JSON.stringify({ name: 'MLWeb – Online MATLAB Image Processing Notebook', short_name: 'MLWeb', start_url: '/', display: 'standalone',
-  background_color: '#12151c', theme_color: '#c2410c', icons: [{ src: '/icon-192.png', sizes: '192x192', type: 'image/png' }, { src: '/icon-512.png', sizes: '512x512', type: 'image/png' }] }, null, 1));
+  background_color: '#12151c', theme_color: '#c2410c', icons: [
+    { src: '/web-app-manifest-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'maskable' },
+    { src: '/web-app-manifest-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
+  ] }, null, 1));
 console.log('dist/index.html', (html.length / 1024).toFixed(0) + ' KB', '| site', SITE, '| lessons', lessons.length);
