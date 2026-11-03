@@ -1,5 +1,6 @@
+import { autocompletion, type Completion, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete';
 import { indentWithTab } from '@codemirror/commands';
-import { HighlightStyle, StreamLanguage, syntaxHighlighting } from '@codemirror/language';
+import { HighlightStyle, StreamLanguage, syntaxHighlighting, syntaxTree } from '@codemirror/language';
 import { octave } from '@codemirror/legacy-modes/mode/octave';
 import { EditorState, Prec } from '@codemirror/state';
 import { keymap } from '@codemirror/view';
@@ -55,6 +56,29 @@ const matlabBuiltins = new Set([
 ]);
 const matlabTypes = new Set(['cell', 'double', 'int8', 'int16', 'int32', 'int64', 'logical', 'single', 'struct', 'uint8', 'uint16', 'uint32', 'uint64']);
 const matlabConstants = new Set(['false', 'true', 'eps', 'i', 'j', 'pi']);
+const matlabCompletionOptions: Completion[] = [
+  ...Array.from(matlabBuiltins, label => ({ label, type: 'function', detail: 'Supported function' })),
+  ...Array.from(matlabKeywords, label => ({ label, type: 'keyword', detail: 'MATLAB keyword' })),
+  ...Array.from(matlabTypes, label => ({ label, type: 'type', detail: 'Numeric or data type' })),
+  ...Array.from(matlabConstants, label => ({ label, type: 'constant', detail: 'MATLAB constant' }))
+];
+const matlabCompletionNames = new Set(matlabCompletionOptions.map(option => option.label));
+function matlabCompletionSource(context: CompletionContext): CompletionResult | null {
+  const word = context.matchBefore(/[A-Za-z]\w*/);
+  if (!word && !context.explicit) return null;
+  const from = word?.from ?? context.pos;
+  if (from > 0 && context.state.sliceDoc(from - 1, from) === '.') return null;
+  const token = syntaxTree(context.state).resolveInner(word?.from ?? context.pos, -1).type.name.toLowerCase();
+  if (token.includes('string') || token.includes('comment')) return null;
+  const variables: Completion[] = vars
+    .filter(variable => !matlabCompletionNames.has(variable.name))
+    .map(variable => ({ label: variable.name, type: 'variable', detail: `${variable.cls} - ${variable.size}` }));
+  return {
+    from,
+    options: [...matlabCompletionOptions, ...variables],
+    validFor: /^[A-Za-z]\w*$/
+  };
+}
 const matlabMode = {
   ...octave,
   tokenTable: {
@@ -261,7 +285,7 @@ function defaultNotebook(): Cell[] {
 }
 
 const helpReference = [
-  ['Notebook', 'Shift+Enter runs and advances; Ctrl+Enter runs in place; Ctrl+Shift+P or ? opens help.', 'يشغّل Shift+Enter الخلية وينتقل للتالية؛ يشغّل Ctrl+Enter في مكانه؛ ويفتح Ctrl+Shift+P أو ? المساعدة.'],
+  ['Notebook', 'Autocomplete suggests commands while typing; Ctrl+Space opens suggestions and Enter accepts one. Shift+Enter runs and advances; Ctrl+Enter runs in place; Ctrl+Shift+P or ? opens help.', 'يقترح الإكمال التلقائي الأوامر أثناء الكتابة؛ يفتح Ctrl+Space الاقتراحات ويقبل Enter أحدها. يشغّل Shift+Enter الخلية وينتقل للتالية؛ يشغّل Ctrl+Enter في مكانه؛ ويفتح Ctrl+Shift+P أو ? المساعدة.'],
   ['switch / case', 'Choose one branch with switch value, case value, otherwise, and end.', 'اختر فرعاً باستخدام switch وcase وotherwise وend.'],
   ['Arrays and cells', 'Create numeric arrays with [1 2; 3 4] and cell arrays with {1, "text"}.', 'أنشئ مصفوفة رقمية مثل [1 2; 3 4] أو خلية مثل {1, "text"}.'],
   ['Structs', "Read and assign fields with s.name; create values with struct('name', value).", 'اقرأ وعيّن الحقول باستخدام s.name؛ وأنشئ البنية عبر struct.'],
@@ -478,6 +502,7 @@ function cellEl(c: Cell, i: number): HTMLElement {
       doc: c.src,
       extensions: [
         basicSetup,
+        autocompletion({ override: [matlabCompletionSource] }),
         matlabLanguage,
         syntaxHighlighting(matlabHighlight),
         editorTheme,

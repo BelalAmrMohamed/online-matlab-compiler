@@ -238,7 +238,7 @@ textarea.src {
   direction: ltr;
   text-align: left;
 }
-.code-editor { min-width: 0; overflow: hidden; border-radius: 0 0 12px 12px; background: var(--code); }
+.code-editor { min-width: 0; overflow: visible; border-radius: 0 0 12px 12px; background: var(--code); }
 .code-editor .cm-editor { color: var(--ink); background: var(--code); font: 14px/1.65 ui-monospace, "Cascadia Code", Menlo, Consolas, monospace; }
 .code-editor .cm-editor.cm-focused { outline: none; }
 .code-editor .cm-scroller { overflow: auto; }
@@ -246,6 +246,10 @@ textarea.src {
 .code-editor .cm-gutters { font-size: 12px; user-select: none; }
 .code-editor .cm-lineNumbers .cm-gutterElement { min-width: 3.2em; padding: 0 10px 0 6px; text-align: right; }
 .code-editor .cm-selectionBackground { border-radius: 2px; }
+.code-editor .cm-tooltip-autocomplete { z-index: 6; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 9px; box-shadow: var(--shadow); }
+.code-editor .cm-tooltip-autocomplete ul { font: 13px/1.45 ui-monospace, "Cascadia Code", Menlo, Consolas, monospace; max-height: 240px; }
+.code-editor .cm-tooltip-autocomplete ul li[aria-selected] { background: color-mix(in srgb, var(--accent) 16%, var(--panel)); color: var(--ink); }
+.code-editor .cm-completionDetail { color: var(--mute); font: 11px/1.45 ui-sans-serif, system-ui, sans-serif; }
 .md { padding: 12px 19px; }
 .md h1, .md h2, .md h3 { margin: .55em 0 .35em; line-height: 1.25; letter-spacing: -.025em; }
 .md h1 { font-size: clamp(24px, 3vw, 34px); }
